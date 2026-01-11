@@ -1,0 +1,252 @@
+:root {
+  --bg: #0f1115;
+  --card: #161a20;
+  --accent: #59c3ff;
+  --accent-strong: #7cf1c6;
+  --text: #e6e9ef;
+  --muted: #9aa4b5;
+  --border: #222834;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  font-family: "Space Grotesk", "Inter", system-ui, -apple-system, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 20% 20%, rgba(121, 202, 255, 0.08), transparent 35%),
+    radial-gradient(circle at 80% 10%, rgba(124, 241, 198, 0.08), transparent 40%),
+    var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 20px 64px;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.logo-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.logo {
+  width: 110px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.eyebrow {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 6px;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 32px;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted);
+  max-width: 640px;
+  line-height: 1.5;
+}
+
+.pill {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: linear-gradient(120deg, rgba(89, 195, 255, 0.12), rgba(124, 241, 198, 0.12));
+  color: var(--text);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 20px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.label {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.input {
+  width: 100%;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0d0f13;
+  color: var(--text);
+}
+
+.textarea {
+  min-height: 180px;
+  resize: vertical;
+}
+
+.inline {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.field input[type="range"] {
+  width: 100%;
+}
+
+.button {
+  padding: 14px 16px;
+  background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+  border: none;
+  border-radius: 12px;
+  color: #031219;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.12s ease;
+  box-shadow: 0 10px 30px rgba(89, 195, 255, 0.35);
+}
+
+.button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.button:hover:not(:disabled) {
+  transform: translateY(-2px);
+}
+
+.status {
+  color: var(--muted);
+  margin: 0;
+}
+
+.history {
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.history-item {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #11141a;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.row.space {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tag {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(89, 195, 255, 0.12);
+  border: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.tag.subtle {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.preview {
+  margin: 8px 0;
+  color: #d7dbe4;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.ghost.small {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+audio {
+  width: 220px;
+}
+
+@media (max-width: 900px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .hero {
+    flex-direction: column;
+  }
+  .logo-wrap {
+    align-items: flex-start;
+  }
+  audio {
+    width: 100%;
+  }
+  .row.space {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
