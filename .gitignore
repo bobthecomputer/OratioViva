@@ -1,0 +1,5 @@
+# Ignore everything at repo root except the project and control files
+/*
+!/OratioViva/
+!/.gitignore
+!/AGENTS.md
