@@ -44,3 +44,4 @@ outputs/
 .npm/
 *.npm
 models/
+frontend/src-tauri/target/

@@ -20,6 +20,24 @@ Template rapide:
 
 ## Entrées
 
+### 2026-01-12 16:55
+- Fait: Ajout scaffold Tauri (src-tauri, Rust launcher qui demarre le backend Python, scripts tauri npm), ajout backend/server.py (serveur sans UI), Vite base dynamique pour Tauri/serveur, .env.tauri, deps npm (@tauri-apps/api/cli), build frontend ok, tests frontend (npm test) et pytest backend repasses.
+- A faire: installer toolchain Rust + WebView2 si manquant, lancer `npm run tauri:dev` puis `npm run tauri:build` pour generer l'exe Tauri; verifier que Python + deps backend sont disponibles pour le lancement auto.
+- Blocages/risques: build Tauri suppose un Python present avec deps backend; aucun empaquetage Python dans l'exe Tauri (sinon utiliser le binaire PyInstaller existant en alternative).
+
+
+### 2026-01-12 16:38
+- Fait: Lanceur desktop refondu avec pywebview (fenetre native au lieu du navigateur), dependance pywebview ajoutee au backend, README mis a jour pour clarifier le mode desktop; creation d'un venv + installation des requirements backend; pytest OK.
+- A faire: rebundler l'executable via `scripts\make_app.ps1` pour inclure pywebview et le frontend /app corrige; tester en mode Windowed.
+- Blocages/risques: pywebview depend du runtime WebView2 sous Windows (installe par defaut sur Win10/11; sinon il faudra l'ajouter).
+
+
+### 2026-01-12 16:30
+- Fait: Vite configure avec base /app pour aligner le mount FastAPI (plus de 404 sur les assets); rebuild frontend (`npm run build`) et tests frontend (`npm test`) ok.
+- A faire: relancer `scripts\make_app.ps1` pour rebundler l'executable avec le frontend corrige; verifier le mode Windowed apres rebuild.
+- Blocages/risques: l'UI doit etre servie sous /app (penser a l'URL /app/ en dev et dans le binaire).
+
+
 ### 2026-01-12 08:01
 
 - Fait: ajout d'un lanceur desktop Python (backend/desktop_app.py) qui demarre FastAPI et ouvre automatiquement l'UI; generation d'une icone depuis le logo (assets/app.ico + favicon), scripts make_app/build_executable ajustes (entree desktop, icone, option Windowed), spec PyInstaller mise a jour.

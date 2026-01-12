@@ -5,3 +5,4 @@ huggingface_hub==0.20.3
 httpx==0.26.0
 pytest==7.4.4
 pytest-asyncio==0.23.5
+pywebview==4.4.1

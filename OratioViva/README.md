@@ -53,19 +53,28 @@ npm run dev
 ```
 
 ## Mode application desktop
-- Lancer le studio local sans build manuel :
+- Lancer le studio local en fenetre native (pywebview, sans navigateur externe) :
   ```
   python -m venv .venv
   .venv\Scripts\activate
   pip install -r backend\requirements.txt
   python backend\desktop_app.py
   ```
-  Le lanceur demarre FastAPI, ouvre `http://127.0.0.1:8000/app` (ou un port libre) et pose les sorties dans `data/` par defaut (`ORATIO_DATA_DIR` pour changer).
+  Le lanceur demarre FastAPI, ouvre une fenetre qui charge `/app/` (port libre si 8000 occupe) et pose les sorties dans `data/` par defaut (`ORATIO_DATA_DIR` pour changer).
 - Generer un executable avec icone (frontend + modeles inclus si dispo) :
   ```
   .\scripts\make_app.ps1 -AppName OratioViva
   ```
-  Ajouter `-Windowed` pour masquer la console (dans ce cas arreter le process via le Gestionnaire des taches). L'exe `dist\OratioViva.exe` ouvre l'interface; fermer la fenetre console suffit pour arreter. L'icone vient de `assets/app.ico` (logo fourni).
+  Ajouter `-Windowed` pour masquer la console. L'exe `dist\OratioViva.exe` ouvre une fenetre desktop; fermer la fenetre (ou le process) arrete le serveur. L'icone vient de `assets/app.ico` (logo fourni).
+  Prerequis Windows: pywebview utilise le runtime Edge WebView2 (present par defaut sur Win10/11; sinon installer le runtime Evergreen).
+- Option Tauri (fenetre native, backend Python auto-lance via .venv ou python du PATH) :
+  ```
+  cd frontend
+  npm install
+  npm run tauri:dev      # dev server Vite + fenetre Tauri
+  npm run tauri:build    # bundle Tauri
+  ```
+  Prerequis: toolchain Rust + Edge WebView2, Python 3.11+ avec `pip install -r backend/requirements.txt`. Le launcher Tauri demarre `backend/server.py` sur 127.0.0.1:1421 et charge `frontend/dist` en base relative.
 
 ### Installation rapide (PowerShell)
 

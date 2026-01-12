@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/1",
+  "package": {
+    "productName": "OratioViva",
+    "version": "0.3.0"
+  },
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host --port 5173 --mode tauri",
+    "beforeBuildCommand": "npm run build -- --mode tauri",
+    "devPath": "http://localhost:5173",
+    "distDir": "../dist"
+  },
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "identifier": "com.oratioviva.app",
+      "resources": ["../backend"],
+      "targets": "all"
+    },
+    "windows": [
+      {
+        "title": "OratioViva",
+        "width": 1200,
+        "height": 800,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

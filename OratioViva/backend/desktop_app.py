@@ -1,9 +1,9 @@
 """
 Desktop launcher for OratioViva.
 
-Starts the FastAPI app locally, opens the bundled frontend, and keeps the process
-alive until the window/console is closed. Intended for the packaged executable so
-that double-clicking behaves like a "real" app instead of a bare script.
+Starts the FastAPI app locally, opens the bundled frontend in a native window
+(pywebview), and keeps the process alive until the window/console is closed.
+Intended for the packaged executable so double-clicking behaves like a desktop app.
 """
 
 from __future__ import annotations
@@ -12,12 +12,16 @@ import os
 import socket
 import threading
 import time
-import webbrowser
 from pathlib import Path
 from typing import Tuple
 
 import httpx
 import uvicorn
+
+try:
+    import webview
+except Exception:  # noqa: BLE001
+    webview = None  # type: ignore[assignment]
 
 
 def ensure_data_dir() -> Path:
@@ -87,10 +91,42 @@ def wait_for_ready(host: str, port: int, timeout: float = POLL_TIMEOUT) -> bool:
 
 
 def open_ui(host: str, port: int) -> None:
-    """Open the studio UI in the default browser."""
+    """Fallback: open the studio UI in the default browser."""
+    import webbrowser
+
     url = f"http://{host}:{port}/app/"
     webbrowser.open(url)
-    print(f"[oratioviva] Interface: {url}")
+    print(f"[oratioviva] Interface (navigateur): {url}")
+
+
+def open_desktop_window(host: str, port: int, server: uvicorn.Server) -> bool:
+    """
+    Open a native desktop window using pywebview.
+
+    Returns True if the webview was started, False if pywebview is unavailable.
+    """
+    if webview is None:
+        print("[oratioviva] pywebview non disponible, ouverture dans le navigateur...")
+        return False
+
+    url = f"http://{host}:{port}/app/"
+    window = webview.create_window(
+        "OratioViva",
+        url=url,
+        width=1200,
+        height=800,
+        resizable=True,
+        confirm_close=True,
+    )
+
+    def _on_closed() -> None:
+        print("[oratioviva] Fenetre fermee, arret du serveur...")
+        server.should_exit = True
+
+    window.events.closed += _on_closed
+    print(f"[oratioviva] Interface (fenetre desktop): {url}")
+    webview.start()
+    return True
 
 
 def main() -> None:
@@ -101,12 +137,17 @@ def main() -> None:
 
     server, thread = start_server(host, port)
     ready = wait_for_ready(host, port)
-    if ready:
-        open_ui(host, port)
-        print("[oratioviva] Fermez cette fenetre pour arreter l'application.")
-    else:
+    if not ready:
         print("[oratioviva] Le serveur ne repond pas (timeout).")
         print("[oratioviva] Verifiez les logs ci-dessus ou changez ORATIO_PORT.")
+        server.should_exit = True
+        thread.join(timeout=2)
+        return
+
+    started_webview = open_desktop_window(host, port, server)
+    if not started_webview:
+        open_ui(host, port)
+        print("[oratioviva] Fermez cette fenetre pour arreter l'application.")
 
     try:
         while thread.is_alive():
@@ -114,8 +155,9 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n[oratioviva] Arret demande, fermeture...")
         server.should_exit = True
+    server.should_exit = True
     thread.join(timeout=2)
-    print("[oratioviva] Serveur arrêté.")
+    print("[oratioviva] Serveur arrete.")
 
 
 if __name__ == "__main__":
