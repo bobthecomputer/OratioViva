@@ -53,7 +53,7 @@ JOBS_PATH = OUTPUT_DIR / "jobs.json"
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 USE_STUB = os.getenv("ORATIO_TTS_STUB", "0") == "1"
 MAX_JOBS = int(os.getenv("ORATIO_JOBS_MAX", "300"))
-TTS_PROVIDER = os.getenv("ORATIO_TTS_PROVIDER", "inference")  # inference | local | stub
+TTS_PROVIDER = os.getenv("ORATIO_TTS_PROVIDER", "auto")  # auto | inference | local | stub
 MODELS_DIR_ENV = os.getenv("ORATIO_MODELS_DIR")
 if MODELS_DIR_ENV:
     MODELS_DIR = Path(MODELS_DIR_ENV).expanduser().resolve()
@@ -178,9 +178,10 @@ tts_service = TTSService(
     base_audio_url="/audio",
     hf_token=HF_TOKEN,
     use_stub=USE_STUB or TTS_PROVIDER == "stub",
-    fallback_stub=True,
+    fallback_stub=False,
     provider=TTS_PROVIDER,
     models_dir=MODELS_DIR,
+    model_manager=model_manager,
 )
 job_store = JobStore(path=JOBS_PATH, max_items=MAX_JOBS)
 # Cleanup on startup (best-effort)
@@ -197,6 +198,7 @@ def health():
         "status": "ok",
         "timestamp": datetime.now(timezone.utc),
         "use_stub": USE_STUB,
+        "provider": tts_service.current_provider(),
         "voices": len(VOICE_PRESETS),
         "history_items": len(load_history()),
         "jobs": len(job_store.list(limit=9999)),
@@ -218,6 +220,7 @@ def models_status():
         ],
         "downloading": model_manager.downloading,
         "needs_download": model_manager.needs_download(),
+        "provider": tts_service.current_provider(),
     }
 
 

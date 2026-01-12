@@ -1,100 +1,42 @@
-# OratioViva — Application texte vers voix
+# OratioViva (app desktop)
 
-Application prévue pour transformer des articles (ex. threads Twitter) en audio agréable à écouter, avec un parcours simple, esthétique et pilotable via deux modèles TTS légers.
+Studio texte-vers-voix local (Kokoro / Parler). Un seul binaire Windows qui lance le backend et le frontend dans la m\u00eame fen\u00eatre.
 
-## Objectifs
-- Coller ou importer du texte puis générer de l’audio en quelques clics.
-- Choisir un modèle (priorité Kokoro-82M v1.0; option Parler-TTS Mini v1.1), une voix et des réglages (débit, pitch/émotion si disponible).
-- Prévisualiser, télécharger et organiser les sorties (historique, favoris, tags).
-- Garder un log de progression clair pour suivre l’avancement.
+## Pr\u00e9requis
+- Windows, Python 3.11+, Node 18+. (Pas d'autres scripts \u00e0 ex\u00e9cuter.)
+- Pour un rendu vocal r\u00e9el : connexion internet le temps de t\u00e9l\u00e9charger les mod\u00e8les.
 
-## Pile technique proposée
-- **Backend**: Python 3.11+, FastAPI, `pydantic`, `uvicorn`. Gestion de files et cache disque pour réutiliser les échantillons audio.
-- **TTS**: modèle par défaut Kokoro-82M v1.0 (Apache-2.0); option Parler-TTS Mini v1.1 si l’on veut plus de contrôles de style. Téléchargement/chargement via `huggingface_hub` (mode offline possible après warmup).
-- **Frontend**: Vite + React + Tailwind (ou CSS maison) pour un studio clair: zone de texte, contrôle du débit/pitch, choix voix, timeline d’exports, lecteur intégré.
-- **Stockage**: fichiers audio en `outputs/audio/` (hash du texte + voix); métadonnées locales en `outputs/history.json` ou petite base SQLite si besoin.
-
-## Structure de repo (proposée)
-- `backend/`: API FastAPI (`/synthesize`, `/voices`, `/history`, `/health`). Inclure un cache de modèles et une file de tâches légère.
-- `frontend/`: app React (Vite) avec pages: éditeur, historique, préférences modèles.
-- `assets/`: éventuels prompts/voix d’exemple.
-- `scripts/`: tâches utilitaires (pré-chargement modèle, nettoyage cache).
-- `outputs/`: audio généré et métadonnées (ignorés par git).
-
-## Roadmap minimale
-1) **Bootstrap backend**: dépendances, endpoints `/voices` (liste voix + langues), `/synthesize` (mode async, retourne URL locale), gestion du cache modèle, stockage audio disque.
-2) **Bootstrap frontend**: pages éditeur + historique, sélection modèle/voix, lecteur audio et bouton download.
-3) **Qualité**: gestion erreurs/timeout, validation d’entrée, quotas de taille, tests API (pytest + httpx).
-4) **UX finale**: thème soigné, onboarding rapide, presets de voix (news, narrateur, conversation), indicateurs de progression de rendu.
-
-## Progress log
-Mise à jour après chaque session dans `PROGRESS.md`:
-- Ajouter un bloc daté (UTC locale) avec: ce qui a été fait, restes à faire, blocages.
-- Garder les entrées les plus récentes en haut.
-- Exemple:
-  - Date: 2026-01-10 21:16
-  - Fait: ...
-  - À faire: ...
-  - Blocages/risques: ...
-
-## Démarrage (brouillon)
-Backend:
+## Construire l'exe (unique)
 ```
-python -m venv .venv
-.venv\\Scripts\\activate
-pip install fastapi uvicorn[standard] pydantic transformers huggingface_hub
-uvicorn backend.main:app --reload
+cd OratioViva
+.\scripts\make_app.ps1 -AppName OratioViva -Windowed
 ```
-Frontend (quand le dossier existera):
-```
-cd frontend
-npm install
-npm run dev
-```
+Ce script :
+- cr\u00e9e `.venv`, installe les d\u00e9ps backend
+- build le frontend
+- t\u00e9l\u00e9charge les mod\u00e8les (Kokoro + Parler) et les embarque
+- g\u00e9n\u00e8re `dist\OratioViva.exe` avec l'ic\u00f4ne
 
-## Mode application desktop
-- Lancer le studio local en fenetre native (pywebview, sans navigateur externe) :
-  ```
-  python -m venv .venv
-  .venv\Scripts\activate
-  pip install -r backend\requirements.txt
-  python backend\desktop_app.py
-  ```
-  Le lanceur demarre FastAPI, ouvre une fenetre qui charge `/app/` (port libre si 8000 occupe) et pose les sorties dans `data/` par defaut (`ORATIO_DATA_DIR` pour changer).
-- Generer un executable avec icone (frontend + modeles inclus si dispo) :
-  ```
-  .\scripts\make_app.ps1 -AppName OratioViva
-  ```
-  Ajouter `-Windowed` pour masquer la console. L'exe `dist\OratioViva.exe` ouvre une fenetre desktop; fermer la fenetre (ou le process) arrete le serveur. L'icone vient de `assets/app.ico` (logo fourni).
-  Prerequis Windows: pywebview utilise le runtime Edge WebView2 (present par defaut sur Win10/11; sinon installer le runtime Evergreen).
-- Option Tauri (fenetre native, backend Python auto-lance via .venv ou python du PATH) :
-  ```
-  cd frontend
-  npm install
-  npm run tauri:dev      # dev server Vite + fenetre Tauri
-  npm run tauri:build    # bundle Tauri
-  ```
-  Prerequis: toolchain Rust + Edge WebView2, Python 3.11+ avec `pip install -r backend/requirements.txt`. Le launcher Tauri demarre `backend/server.py` sur 127.0.0.1:1421 et charge `frontend/dist` en base relative.
-
-### Installation rapide (PowerShell)
-
+## Lancer
 ```
-.\scripts\setup.ps1
-# ou sans frontend :
-.\scripts\setup.ps1 -SkipFrontend
+.\dist\OratioViva.exe
 ```
+- La fen\u00eatre s'ouvre, backend d\u00e9j\u00e0 lanc\u00e9. Les donn\u00e9es sont dans `data\` (modifier via `ORATIO_DATA_DIR` avant de lancer l'exe).
+- Au premier lancement, l'appli t\u00e9l\u00e9charge les mod\u00e8les si besoin. L'\u00e9tiquette "Modeles a installer" passe en "Mode local" quand tout est pr\u00eat. En mode "stub" vous n'entendrez qu'un bip.
 
-### Packaging / executable
-- Envoyer les donnees (audio, jobs) ailleurs que dans le dossier courant: `ORATIO_DATA_DIR=C:\OratioData` (par defaut pour un executable, le cwd est utilise).
-- Servir le frontend build via `/app` (si `frontend/dist` existe ou `ORATIO_FRONTEND_DIR` pointe vers le dossier).
-- Commande unique pour tout faire (deps, build frontend, download models, PyInstaller onefile + icone) - ajouter `-Windowed` si vous ne voulez pas de console:
-```
-.\scripts\make_app.ps1 -AppName OratioViva   # produit dist\OratioViva.exe
-```
-- Telechargement des modeles seul (offline local): `python scripts\download_models.py --dest models` (puis `ORATIO_MODELS_DIR=models` ou auto-detection si bundle PyInstaller).
-- Python 3.11+ recommande (wheels presents pour 3.13 avec pydantic 2.10.3).
+## Contr\u00f4les dans l'UI
+- Voix Kokoro/Parler, vitesse, style (prompt Parler).
+- Historique, lecture, t\u00e9l\u00e9chargement, export ZIP, suppression et gestion des jobs.
+- Badge d'\u00e9tat mod\u00e8les/provider + avertissement si mode stub.
 
+## D\u00e9veloppement (optionnel)
+- Backend local : `.\backend\.venv\Scripts\uvicorn backend.main:app --reload`
+- Frontend dev : `cd frontend && npm run dev` (utilise `VITE_API_BASE`)
+- Tests backend : `.\backend\.venv\Scripts\pytest -q`
+- Tests frontend : `cd frontend && npm test && npm run build`
 
-## Notes modèles
-- Kokoro-82M v1.0: rapide, léger, multi-voix (EN/JP/ES/FR/Hindi/IT/PT-BR). Recommandé pour narration générale.
-- Parler-TTS Mini v1.1: permet des descriptions de style (débit, expressivité) + 34 locuteurs. Multilingue Mini v1.1 si priorité aux langues européennes.
+## Points techniques
+- Provider auto : s'il trouve des mod\u00e8les locaux -> local; sinon token HF -> inference; sinon stub (bip).
+- Mod\u00e8les bundl\u00e9s via `scripts\make_app.ps1` (utilise `scripts\download_models.py`).
+- Outputs : `data\outputs\audio` + `history.json` (ignor\u00e9s par git).
+

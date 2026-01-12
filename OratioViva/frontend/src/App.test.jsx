@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 
 const sampleVoices = {
@@ -39,6 +39,20 @@ function createFetchMock() {
   const fetchMock = vi.fn(async (url, opts = {}) => {
     if (url.includes("/voices")) {
       return { ok: true, json: async () => sampleVoices };
+    }
+    if (url.includes("/models/status")) {
+      return {
+        ok: true,
+        json: async () => ({
+          models: [],
+          needs_download: false,
+          downloading: false,
+          provider: "stub",
+        }),
+      };
+    }
+    if (url.includes("/models/download")) {
+      return { ok: true, json: async () => ({ status: "started" }) };
     }
     if (url.includes("/history")) {
       if (opts.method === "DELETE") {
@@ -95,11 +109,11 @@ describe("App selection and export", () => {
 
   it("allows batch delete of jobs", async () => {
     render(<App />);
-    await waitFor(() => screen.getByText(/File d’attente/));
+    await waitFor(() => screen.getByText(/File d'attente/));
     const checkboxes = screen.getAllByRole("checkbox");
     const checkbox = checkboxes[checkboxes.length - 1]; // take one from jobs list
     fireEvent.click(checkbox);
-    const deleteButtons = screen.getAllByText(/Supprimer sélection/);
+    const deleteButtons = screen.getAllByText(/Supprimer selection/);
     const jobsDeleteBtn = deleteButtons[deleteButtons.length - 1];
     fireEvent.click(jobsDeleteBtn);
     await waitFor(() => {

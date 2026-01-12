@@ -12,6 +12,11 @@ from typing import Dict, Optional
 
 from huggingface_hub import InferenceClient
 
+try:
+    # Optional import, only used for provider auto-detection
+    from backend.models import ModelManager
+except Exception:  # noqa: BLE001
+    ModelManager = None  # type: ignore[assignment]
 
 @dataclass(frozen=True)
 class VoicePreset:
@@ -42,8 +47,8 @@ VOICE_PRESETS = [
         id="kokoro_fr_0",
         model="hexgrad/Kokoro-82M",
         language="fr",
-        label="Kokoro Français Clair",
-        description="Français, neutralité",
+        label="Kokoro Francais Clair",
+        description="Francais, neutralite",
     ),
     VoicePreset(
         id="parler_en_neutral",
@@ -76,9 +81,10 @@ class TTSService:
         base_audio_url: str = "/audio",
         hf_token: Optional[str] = None,
         use_stub: bool = False,
-        fallback_stub: bool = True,
-        provider: str = "inference",  # "inference" | "local" | "stub"
+        fallback_stub: bool = False,
+        provider: str = "auto",  # "auto" | "inference" | "local" | "stub"
         models_dir: Optional[Path] = None,
+        model_manager: Optional["ModelManager"] = None,
     ) -> None:
         self.audio_dir = audio_dir
         self.base_audio_url = base_audio_url.rstrip("/")
@@ -87,6 +93,7 @@ class TTSService:
         self.fallback_stub = fallback_stub
         self.provider = provider
         self.models_dir = models_dir
+        self.model_manager = model_manager
         self._clients: Dict[str, InferenceClient] = {}
         self._local_pipelines: Dict[str, object] = {}
         self.audio_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +109,7 @@ class TTSService:
         speed: float = 1.0,
         style: Optional[str] = None,
         job_id: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> AudioResult:
         if voice_id not in VOICE_BY_ID:
             raise ValueError(f"Unknown voice_id: {voice_id}")
@@ -111,7 +119,10 @@ class TTSService:
         voice = VOICE_BY_ID[voice_id]
         created_at = datetime.now(timezone.utc)
 
-        if self.use_stub:
+        resolved_provider = provider or self._resolve_provider()
+        use_stub = self.use_stub or resolved_provider == "stub"
+
+        if use_stub:
             duration = self._generate_stub_audio(text, destination, speed=speed)
             return AudioResult(
                 job_id=job_id,
@@ -125,7 +136,7 @@ class TTSService:
             )
 
         try:
-            if self.provider == "local" and not self.use_stub:
+            if resolved_provider == "local":
                 return self._synthesize_local(
                     text=text,
                     voice=voice,
@@ -135,7 +146,7 @@ class TTSService:
                     style=style,
                     created_at=created_at,
                 )
-            if self.provider == "inference" and not self.use_stub:
+            if resolved_provider == "inference":
                 return self._synthesize_inference(
                     text=text,
                     voice=voice,
@@ -157,7 +168,7 @@ class TTSService:
                 source="stub",
             )
         except Exception:
-            if not self.fallback_stub:
+            if not self.fallback_stub and resolved_provider != "stub":
                 raise
             duration = self._generate_stub_audio(text, destination, speed=speed)
             return AudioResult(
@@ -175,6 +186,27 @@ class TTSService:
         if model not in self._clients:
             self._clients[model] = InferenceClient(model=model, token=self.hf_token)
         return self._clients[model]
+
+    def _resolve_provider(self) -> str:
+        if self.provider in {"local", "inference", "stub"}:
+            return self.provider
+        # auto: prefer local models, then inference (token), else stub
+        if self._has_local_models():
+            return "local"
+        if self.hf_token:
+            return "inference"
+        return "stub"
+
+    def current_provider(self) -> str:
+        """Expose the provider resolved at runtime."""
+        return self._resolve_provider()
+
+    def _has_local_models(self) -> bool:
+        if self.model_manager is not None:
+            return not self.model_manager.needs_download()
+        if not self.models_dir:
+            return False
+        return any(self.models_dir.glob("*"))
 
     def _write_wav_bytes(self, audio_bytes: bytes, destination: Path, speed: float) -> float:
         with wave.open(io.BytesIO(audio_bytes), "rb") as wav_in:

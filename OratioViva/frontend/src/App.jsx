@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   createSynthesis,
+  deleteHistory,
+  deleteHistoryBatch,
+  deleteJob,
+  deleteJobsBatch,
+  downloadModels,
+  exportZip,
   fetchHistory,
   fetchJob,
   fetchJobs,
-  fetchVoices,
-  deleteHistory,
-  deleteJob,
-  deleteHistoryBatch,
-  deleteJobsBatch,
-  exportZip,
-  getApiBase,
   fetchModelStatus,
-  downloadModels,
+  fetchVoices,
+  getApiBase,
 } from "./api";
 
 const POLL_INTERVAL_MS = 1200;
@@ -30,16 +30,22 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState(new Set());
   const [selectedJobs, setSelectedJobs] = useState(new Set());
-  const [modelState, setModelState] = useState({ needsDownload: false, downloading: false });
+  const [modelState, setModelState] = useState({
+    needsDownload: false,
+    downloading: false,
+    provider: "auto",
+    models: [],
+  });
+  const [startedAutoDownload, setStartedAutoDownload] = useState(false);
 
   useEffect(() => {
     fetchVoices()
       .then((res) => {
         setVoices(res.voices || []);
         if (!voiceId && res.voices?.[0]) {
-        setVoiceId(res.voices[0].id);
-      }
-    })
+          setVoiceId(res.voices[0].id);
+        }
+      })
       .catch((err) => setStatus(err.message));
     refreshHistory();
     refreshJobs();
@@ -71,11 +77,19 @@ export default function App() {
         needsDownload: res.needs_download,
         downloading: res.downloading,
         models: res.models,
+        provider: res.provider || "auto",
       });
     } catch {
       /* noop */
     }
   }
+
+  useEffect(() => {
+    if (modelState.needsDownload && !modelState.downloading && !startedAutoDownload) {
+      setStartedAutoDownload(true);
+      ensureModels();
+    }
+  }, [modelState.needsDownload, modelState.downloading, startedAutoDownload]);
 
   async function ensureModels() {
     setModelState((s) => ({ ...s, downloading: true }));
@@ -86,14 +100,19 @@ export default function App() {
         await new Promise((r) => setTimeout(r, MODEL_POLL_MS));
         const res = await fetchModelStatus();
         if (!res.needs_download) {
-          setModelState({ needsDownload: false, downloading: false, models: res.models });
+          setModelState({
+            needsDownload: false,
+            downloading: false,
+            models: res.models,
+            provider: res.provider || "auto",
+          });
           return;
         }
         attempts += 1;
       }
-      setStatus("Téléchargement des modèles: délai dépassé");
+      setStatus("Telechargement des modeles: delai depasse.");
     } catch (err) {
-      setStatus(err.message || "Erreur de téléchargement des modèles");
+      setStatus(err.message || "Erreur de telechargement des modeles");
     } finally {
       setModelState((s) => ({ ...s, downloading: false }));
     }
@@ -103,23 +122,24 @@ export default function App() {
     () =>
       voices.map((v) => (
         <option key={v.id} value={v.id}>
-          {v.label} · {v.language}
+          {v.label} - {v.language}
         </option>
       )),
     [voices],
   );
 
   const modelReady = !modelState.needsDownload && !modelState.downloading;
+  const providerLabel = modelState.provider === "auto" ? "auto" : modelState.provider;
   const modelBadgeText = modelState.downloading
-    ? "Telechargement..."
+    ? "Telechargement des modeles..."
     : modelState.needsDownload
       ? "Modeles a installer"
-      : "Pret a generer";
+      : `Mode ${providerLabel}`;
+  const usingStub = providerLabel === "stub";
 
   async function pollJob(jobId) {
     let attempts = 0;
     while (attempts < 20) {
-      // 20 * 1.2s ≈ 24s timeout
       attempts += 1;
       const job = await fetchJob(jobId);
       if (job.status === "succeeded") {
@@ -136,22 +156,26 @@ export default function App() {
   async function handleSubmit(e) {
     e.preventDefault();
     if (!text.trim()) {
-      setStatus("Ajoutez du texte avant de lancer la synthèse.");
+      setStatus("Ajoutez du texte avant de lancer la synthese.");
+      return;
+    }
+    if (modelState.needsDownload) {
+      setStatus("Installez les modeles pour obtenir une vraie voix.");
       return;
     }
     setLoading(true);
-    setStatus("Synthèse en cours…");
+    setStatus("Synthese en cours...");
     try {
       const job = await createSynthesis(
         { text, voice_id: voiceId, speed, style: style || undefined },
         { asyncMode: true },
       );
-      const finalJob = await pollJob(job.job_id);
-      setStatus("Synthèse terminée.");
+      await pollJob(job.job_id);
+      setStatus("Synthese terminee.");
       await refreshHistory();
       await refreshJobs();
     } catch (err) {
-      setStatus(err.message || "Erreur de synthèse");
+      setStatus(err.message || "Erreur de synthese");
     } finally {
       setLoading(false);
     }
@@ -205,11 +229,11 @@ export default function App() {
 
   async function handleExportSelected() {
     if (selectedHistory.size === 0) {
-      setStatus("Sélectionnez au moins un rendu pour exporter.");
+      setStatus("Selectionnez au moins un rendu pour exporter.");
       return;
     }
     try {
-      setStatus("Préparation de l'export…");
+      setStatus("Preparation de l'export...");
       const url = await exportZip(Array.from(selectedHistory));
       const a = document.createElement("a");
       a.href = url;
@@ -218,7 +242,7 @@ export default function App() {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-      setStatus("Export téléchargé.");
+      setStatus("Export telecharge.");
       clearSelection();
     } catch (err) {
       setStatus(err.message || "Export impossible");
@@ -227,14 +251,14 @@ export default function App() {
 
   async function handleDeleteSelectedHistory() {
     if (selectedHistory.size === 0) {
-      setStatus("Sélectionnez au moins un rendu à supprimer.");
+      setStatus("Selectionnez au moins un rendu a supprimer.");
       return;
     }
     try {
       await deleteHistoryBatch(Array.from(selectedHistory), true);
       await refreshHistory();
       clearSelection();
-      setStatus("Historique supprimé.");
+      setStatus("Historique supprime.");
     } catch (err) {
       setStatus(err.message || "Suppression impossible");
     }
@@ -242,14 +266,14 @@ export default function App() {
 
   async function handleDeleteSelectedJobs() {
     if (selectedJobs.size === 0) {
-      setStatus("Sélectionnez au moins un job à supprimer.");
+      setStatus("Selectionnez au moins un job a supprimer.");
       return;
     }
     try {
       await deleteJobsBatch(Array.from(selectedJobs));
       await refreshJobs();
       clearJobSelection();
-      setStatus("Jobs supprimés.");
+      setStatus("Jobs supprimes.");
     } catch (err) {
       setStatus(err.message || "Suppression impossible");
     }
@@ -260,20 +284,22 @@ export default function App() {
       {modelState.needsDownload && (
         <div className="overlay">
           <div className="overlay-card">
-            <p className="eyebrow">Préparation</p>
-            <h2>Téléchargement des modèles</h2>
+            <p className="eyebrow">Preparation</p>
+            <h2>Installer les modeles TTS</h2>
             <p className="lede">
-              Premier démarrage: les modèles TTS vont être téléchargés automatiquement pour usage
-              hors-ligne.
+              Premier lancement: telechargez Kokoro/Parler pour entendre une vraie voix (sinon bip de test).
+            </p>
+            <p className="lede">
+              Cela prend 1 a 3 minutes selon la connexion. Laissez la fenetre ouverte.
             </p>
             <button className="button" onClick={ensureModels} disabled={modelState.downloading}>
-              {modelState.downloading ? "Téléchargement..." : "Installer les modèles"}
+              {modelState.downloading ? "Telechargement..." : "Installer les modeles"}
             </button>
             {modelState.models && (
               <ul className="model-list">
                 {modelState.models.map((m) => (
                   <li key={m.id}>
-                    <span>{m.repo_id}</span> — {m.exists ? "présent" : "manquant"}
+                    <span>{m.repo_id}</span> - {m.exists ? "present" : "manquant"}
                   </li>
                 ))}
               </ul>
@@ -288,23 +314,15 @@ export default function App() {
           <div>
             <div className="toolbar-title">OratioViva Desktop</div>
             <p className="toolbar-sub">
-              Serveur local: <code>{getApiBase()}</code>
+              App locale connectee a <code>{getApiBase()}</code>
             </p>
           </div>
         </div>
         <div className="toolbar-actions">
-          <span className={modelReady ? "badge badge-ok" : "badge badge-warn"}>
-            {modelBadgeText}
-          </span>
-          <button className="ghost" onClick={refreshModels}>
-            Modeles
-          </button>
-          <button className="ghost" onClick={refreshHistory}>
-            Historique
-          </button>
-          <button className="ghost" onClick={refreshJobs}>
-            Jobs
-          </button>
+          <span className={modelReady ? "badge badge-ok" : "badge badge-warn"}>{modelBadgeText}</span>
+          <button className="ghost" onClick={refreshModels}>Modeles</button>
+          <button className="ghost" onClick={refreshHistory}>Historique</button>
+          <button className="ghost" onClick={refreshJobs}>Jobs</button>
         </div>
       </div>
 
@@ -313,9 +331,13 @@ export default function App() {
           <p className="eyebrow">OratioViva Studio</p>
           <h1>Convertissez vos threads en audio clair.</h1>
           <p className="lede">
-            Collez un texte, choisissez une voix, générez en un clic. Kokoro pour la vitesse,
-            Parler pour le style. API: <code>{getApiBase()}</code>
+            Collez un texte, choisissez une voix, genere en un clic. Kokoro pour la vitesse, Parler pour le style.
           </p>
+          {usingStub && (
+            <p className="lede warning">
+              Mode stub (bip de test). Installez les modeles pour entendre une vraie voix.
+            </p>
+          )}
         </div>
         <div className="logo-wrap">
           <img src="/logo.png" alt="OratioViva logo" className="logo" />
@@ -330,7 +352,7 @@ export default function App() {
             <textarea
               className="input textarea"
               rows={8}
-              placeholder="Collez votre thread ou article…"
+              placeholder="Collez votre thread ou article."
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
@@ -338,11 +360,7 @@ export default function App() {
             <div className="inline">
               <div className="field">
                 <label className="label">Voix</label>
-                <select
-                  className="input"
-                  value={voiceId}
-                  onChange={(e) => setVoiceId(e.target.value)}
-                >
+                <select className="input" value={voiceId} onChange={(e) => setVoiceId(e.target.value)}>
                   {voiceOptions}
                 </select>
               </div>
@@ -363,14 +381,14 @@ export default function App() {
               <label className="label">Style (Parler)</label>
               <input
                 className="input"
-                placeholder="ex: slightly expressive, calm narrator…"
+                placeholder="ex: slightly expressive, calm narrator."
                 value={style}
                 onChange={(e) => setStyle(e.target.value)}
               />
             </div>
 
             <button className="button" type="submit" disabled={loading}>
-              {loading ? "Synthèse…" : "Générer l'audio"}
+              {loading ? "Synthese..." : "Generer l'audio"}
             </button>
             {status && <p className="status">{status}</p>}
           </form>
@@ -380,18 +398,12 @@ export default function App() {
           <div className="history-header">
             <div>
               <p className="eyebrow">Historique</p>
-              <h2>Dernières générations</h2>
+              <h2>Dernieres generations</h2>
             </div>
             <div className="row">
-              <button className="ghost" onClick={refreshHistory}>
-                Rafraîchir
-              </button>
-              <button className="ghost" onClick={handleExportSelected}>
-                Export ZIP
-              </button>
-              <button className="ghost" onClick={handleDeleteSelectedHistory}>
-                Supprimer sélection
-              </button>
+              <button className="ghost" onClick={refreshHistory}>Rafraichir</button>
+              <button className="ghost" onClick={handleExportSelected}>Export ZIP</button>
+              <button className="ghost" onClick={handleDeleteSelectedHistory}>Supprimer selection</button>
             </div>
           </div>
           <div className="history-list">
@@ -420,12 +432,8 @@ export default function App() {
                   {item.audio_url ? (
                     <div className="row">
                       <audio controls src={`${getApiBase()}${item.audio_url}`} />
-                      <a
-                        className="ghost small"
-                        href={`${getApiBase()}${item.audio_url}`}
-                        download
-                      >
-                        Télécharger
+                      <a className="ghost small" href={`${getApiBase()}${item.audio_url}`} download>
+                        Telecharger
                       </a>
                     </div>
                   ) : (
@@ -434,7 +442,7 @@ export default function App() {
                 </div>
               </article>
             ))}
-            {history.length === 0 && <p className="muted">Aucun rendu pour l’instant.</p>}
+            {history.length === 0 && <p className="muted">Aucun rendu pour l'instant.</p>}
           </div>
         </section>
       </main>
@@ -442,16 +450,12 @@ export default function App() {
       <section className="card jobs">
         <div className="history-header">
           <div>
-            <p className="eyebrow">Jobs récents</p>
-            <h2>File d’attente</h2>
+            <p className="eyebrow">Jobs recents</p>
+            <h2>File d'attente</h2>
           </div>
           <div className="row">
-            <button className="ghost" onClick={refreshJobs}>
-              Rafraîchir
-            </button>
-            <button className="ghost" onClick={handleDeleteSelectedJobs}>
-              Supprimer sélection
-            </button>
+            <button className="ghost" onClick={refreshJobs}>Rafraichir</button>
+            <button className="ghost" onClick={handleDeleteSelectedJobs}>Supprimer selection</button>
           </div>
         </div>
         <div className="history-list">
@@ -474,7 +478,7 @@ export default function App() {
               </div>
               <p className="muted">{job.job_id}</p>
               <small>
-                Créé: {new Date(job.created_at).toLocaleString()} · Maj:{" "}
+                Cree: {new Date(job.created_at).toLocaleString()} - Maj:{" "}
                 {new Date(job.updated_at).toLocaleString()}
               </small>
             </article>

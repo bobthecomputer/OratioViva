@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
 
 async function jsonFetch(path, options = {}) {
   const resp = await fetch(`${API_BASE}${path}`, {

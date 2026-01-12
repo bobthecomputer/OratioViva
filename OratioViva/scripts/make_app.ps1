@@ -6,7 +6,7 @@ Param(
     [string]$DataDir = "data",
     [string]$IconPath = "assets/app.ico",
     [string]$Entrypoint = "backend\desktop_app.py",
-    [switch]$Windowed = $false
+    [switch]$Windowed = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +15,7 @@ $repoRoot = Split-Path $scriptRoot -Parent
 Push-Location $repoRoot
 
 Write-Host "== OratioViva build (one-shot) ==" -ForegroundColor Cyan
+Write-Host "Fenetre uniquement. Le binaire lance backend + frontend automatiquement." -ForegroundColor Yellow
 
 # Backend: venv + deps + pyinstaller
 Push-Location "backend"
@@ -43,8 +44,11 @@ if (-not $SkipFrontend) {
 # Optional model download
 $modelsPath = $null
 if (-not $SkipModels) {
-    Write-Host "Downloading models to $ModelsDest" -ForegroundColor Green
+    Write-Host "Downloading models to $ModelsDest (peut prendre 1-3 minutes)..." -ForegroundColor Green
+    $modelTimer = [System.Diagnostics.Stopwatch]::StartNew()
     & ".\backend\.venv\Scripts\python.exe" ".\scripts\download_models.py" --dest $ModelsDest
+    $modelTimer.Stop()
+    Write-Host ("Models ready in {0:mm\\:ss}" -f $modelTimer.Elapsed) -ForegroundColor Green
     $modelsPath = (Resolve-Path $ModelsDest).Path
 } elseif (Test-Path $ModelsDest) {
     $modelsPath = (Resolve-Path $ModelsDest).Path

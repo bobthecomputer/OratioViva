@@ -1,7 +1,11 @@
 # Journal de progression
 
+### 2026-01-12 19:10
+- Fait: UI simplifiee (badge provider, auto-telechargement modeles, avertissement stub, API base relative), backend TTS auto (provider auto/local prioritaire, plus de fallback silencieux), scripts reduits a make_app.ps1 unique, README refait pour mode fenetre uniquement.
+- A faire: relancer .\\scripts\\make_app.ps1 -AppName OratioViva -Windowed pour bundler les modeles et tester l'audio reel (Kokoro/Parler).
+- Blocages/risques: connexion requise pour telecharger les modeles la premiere fois; sans modeles ni token HF, l'appli reste en stub (bip).
 
-
+## Ancien log
 Mise à jour après chaque session. Garder les entrées les plus récentes en haut.
 
 
@@ -159,4 +163,5 @@ Template rapide:
 - A faire: initialiser `backend/` avec FastAPI, endpoints `/voices` et `/synthesize`, cache audio/disque; initialiser `frontend/` (Vite/React) avec pages éditeur + historique.
 
 - Blocages/risques: aucun pour l’instant (repo vide).
+
 
