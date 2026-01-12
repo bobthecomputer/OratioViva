@@ -36,6 +36,17 @@ export async function fetchJob(jobId) {
   return jsonFetch(`/jobs/${jobId}`);
 }
 
+export async function fetchModelStatus() {
+  return jsonFetch("/models/status");
+}
+
+export async function downloadModels(models) {
+  return jsonFetch("/models/download", {
+    method: "POST",
+    body: JSON.stringify(models ? { models } : {}),
+  });
+}
+
 export async function deleteHistory(jobId) {
   const resp = await fetch(`${API_BASE}/history/${jobId}`, { method: "DELETE" });
   if (!resp.ok) {

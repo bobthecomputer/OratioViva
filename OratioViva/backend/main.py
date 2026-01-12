@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -17,9 +18,33 @@ from pydantic import BaseModel, Field
 
 from backend.cleanup import run_from_env
 from backend.jobs import JobStatus, JobStore
+from backend.models import ModelManager
 from backend.tts import TTSService, VOICE_PRESETS
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+
+def resolve_base_dir() -> Path:
+    """Locate base directory for outputs; supports PyInstaller (frozen) + env override."""
+    data_dir_env = os.getenv("ORATIO_DATA_DIR")
+    if data_dir_env:
+        return Path(data_dir_env).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        # When packaged, default to the working directory of the executable.
+        return Path.cwd()
+    return Path(__file__).resolve().parent.parent
+
+
+def resolve_frontend_dist(base_dir: Path) -> Path:
+    env_dir = os.getenv("ORATIO_FRONTEND_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        # When frozen, PyInstaller exposes bundled files under _MEIPASS.
+        bundle_root = Path(getattr(sys, "_MEIPASS", Path.cwd()))
+        return bundle_root / "frontend" / "dist"
+    return base_dir / "frontend" / "dist"
+
+
+BASE_DIR = resolve_base_dir()
 OUTPUT_DIR = BASE_DIR / "outputs"
 AUDIO_DIR = OUTPUT_DIR / "audio"
 HISTORY_PATH = OUTPUT_DIR / "history.json"
@@ -29,6 +54,16 @@ HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 USE_STUB = os.getenv("ORATIO_TTS_STUB", "0") == "1"
 MAX_JOBS = int(os.getenv("ORATIO_JOBS_MAX", "300"))
 TTS_PROVIDER = os.getenv("ORATIO_TTS_PROVIDER", "inference")  # inference | local | stub
+MODELS_DIR_ENV = os.getenv("ORATIO_MODELS_DIR")
+if MODELS_DIR_ENV:
+    MODELS_DIR = Path(MODELS_DIR_ENV).expanduser().resolve()
+elif getattr(sys, "frozen", False):
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path.cwd()))
+    candidate = bundle_root / "models"
+    MODELS_DIR = candidate if candidate.exists() else None
+else:
+    MODELS_DIR = BASE_DIR / "models"
+FRONTEND_DIST = resolve_frontend_dist(BASE_DIR)
 
 
 class SynthesisRequest(BaseModel):
@@ -60,6 +95,12 @@ class ExportRequest(BaseModel):
 class BatchDeleteRequest(BaseModel):
     job_ids: List[str] = Field(..., min_length=1, description="List of job_ids to delete.")
     delete_audio: bool = Field(True, description="When deleting history, also delete audio files.")
+
+
+class ModelDownloadRequest(BaseModel):
+    models: Optional[List[str]] = Field(
+        None, description="Optional list of model aliases/repo_ids to download."
+    )
 
 
 def ensure_directories() -> None:
@@ -131,6 +172,7 @@ app.add_middleware(
 )
 
 ensure_directories()
+model_manager = ModelManager(base_dir=BASE_DIR, models_dir=MODELS_DIR, token=HF_TOKEN)
 tts_service = TTSService(
     audio_dir=AUDIO_DIR,
     base_audio_url="/audio",
@@ -138,12 +180,15 @@ tts_service = TTSService(
     use_stub=USE_STUB or TTS_PROVIDER == "stub",
     fallback_stub=True,
     provider=TTS_PROVIDER,
+    models_dir=MODELS_DIR,
 )
 job_store = JobStore(path=JOBS_PATH, max_items=MAX_JOBS)
 # Cleanup on startup (best-effort)
 run_from_env(AUDIO_DIR, HISTORY_PATH)
 
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
+if FRONTEND_DIST.exists():
+    app.mount("/app", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 
 
 @app.get("/health")
@@ -161,6 +206,31 @@ def health():
 @app.get("/voices")
 def list_voices():
     return {"voices": tts_service.list_voices()}
+
+
+@app.get("/models/status")
+def models_status():
+    statuses = model_manager.status()
+    return {
+        "models": [
+            {"id": s.id, "repo_id": s.repo_id, "exists": s.exists, "path": str(s.path)}
+            for s in statuses
+        ],
+        "downloading": model_manager.downloading,
+        "needs_download": model_manager.needs_download(),
+    }
+
+
+@app.post("/models/download")
+def models_download(body: ModelDownloadRequest, background_tasks: BackgroundTasks):
+    if model_manager.downloading:
+        return {"status": "running"}
+
+    def _download():
+        model_manager.download(body.models)
+
+    background_tasks.add_task(_download)
+    return {"status": "started"}
 
 
 def _record_history(result, text: str) -> None:
@@ -310,4 +380,5 @@ def export_zip(body: ExportRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    reload_flag = os.getenv("ORATIO_RELOAD", "0") == "1"
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=reload_flag)

@@ -52,12 +52,39 @@ npm install
 npm run dev
 ```
 
+## Mode application desktop
+- Lancer le studio local sans build manuel :
+  ```
+  python -m venv .venv
+  .venv\Scripts\activate
+  pip install -r backend\requirements.txt
+  python backend\desktop_app.py
+  ```
+  Le lanceur demarre FastAPI, ouvre `http://127.0.0.1:8000/app` (ou un port libre) et pose les sorties dans `data/` par defaut (`ORATIO_DATA_DIR` pour changer).
+- Generer un executable avec icone (frontend + modeles inclus si dispo) :
+  ```
+  .\scripts\make_app.ps1 -AppName OratioViva
+  ```
+  Ajouter `-Windowed` pour masquer la console (dans ce cas arreter le process via le Gestionnaire des taches). L'exe `dist\OratioViva.exe` ouvre l'interface; fermer la fenetre console suffit pour arreter. L'icone vient de `assets/app.ico` (logo fourni).
+
 ### Installation rapide (PowerShell)
+
 ```
 .\scripts\setup.ps1
 # ou sans frontend :
 .\scripts\setup.ps1 -SkipFrontend
 ```
+
+### Packaging / executable
+- Envoyer les donnees (audio, jobs) ailleurs que dans le dossier courant: `ORATIO_DATA_DIR=C:\OratioData` (par defaut pour un executable, le cwd est utilise).
+- Servir le frontend build via `/app` (si `frontend/dist` existe ou `ORATIO_FRONTEND_DIR` pointe vers le dossier).
+- Commande unique pour tout faire (deps, build frontend, download models, PyInstaller onefile + icone) - ajouter `-Windowed` si vous ne voulez pas de console:
+```
+.\scripts\make_app.ps1 -AppName OratioViva   # produit dist\OratioViva.exe
+```
+- Telechargement des modeles seul (offline local): `python scripts\download_models.py --dest models` (puis `ORATIO_MODELS_DIR=models` ou auto-detection si bundle PyInstaller).
+- Python 3.11+ recommande (wheels presents pour 3.13 avec pydantic 2.10.3).
+
 
 ## Notes modèles
 - Kokoro-82M v1.0: rapide, léger, multi-voix (EN/JP/ES/FR/Hindi/IT/PT-BR). Recommandé pour narration générale.

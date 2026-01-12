@@ -43,3 +43,4 @@ tmp/
 outputs/
 .npm/
 *.npm
+models/

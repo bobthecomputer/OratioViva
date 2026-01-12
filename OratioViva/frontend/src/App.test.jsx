@@ -79,7 +79,7 @@ describe("App selection and export", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Historique/)).toBeInTheDocument();
+      expect(screen.getByText(/Hello world/)).toBeInTheDocument();
     });
 
     const checkbox = screen.getAllByRole("checkbox")[0];

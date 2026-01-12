@@ -17,6 +17,9 @@ pip install -r requirements.txt
 - `ORATIO_CLEAN_MAX_HISTORY` (defaut 200): nombre max d'entrees conservees dans `history.json`.
 - `ORATIO_JOBS_MAX` (defaut 300, via code): jobs conserves dans `outputs/jobs.json`.
 - `ORATIO_TTS_PROVIDER` (`inference` | `local` | `stub`): choisir la source TTS. `local` attend transformers+numpy (+ torch) installes.
+- `ORATIO_DATA_DIR`: force le dossier racine des outputs (`outputs/`). Quand l'app est packagée (PyInstaller), le cwd est utilisé par défaut.
+- `ORATIO_FRONTEND_DIR`: chemin vers un dossier static (ex: `frontend/dist`) qui sera servi sur `/app` (sinon auto-détection du bundle PyInstaller).
+- `ORATIO_MODELS_DIR`: chemin vers des modèles téléchargés localement (structure `hexgrad_Kokoro-82M`, `parler-tts_parler-tts-mini-v1.1`). Quand packagée, `_MEIPASS/models` est auto-détecté si présent.
 
 ## Demarrer l'API
 ```
@@ -56,3 +59,12 @@ Les fichiers sont ecrits dans `outputs/audio/` et listes dans `outputs/history.j
   ```
 - Modeles par defaut: `hexgrad/Kokoro-82M` et `parler-tts/parler-tts-mini-v1.1` via transformers `pipeline("text-to-speech")`.
 - Si les deps manquent, le service retombe sur le stub si `fallback_stub=True`.
+
+## Packaging / offline
+- Commande unique (deps, frontend build, modèles, exe onefile) : `.\scripts\make_app.ps1`
+- T‚l‚charger les modŠles (offline) : `python scripts\download_models.py --dest models` (utilise `HF_TOKEN`).
+- Servir le frontend build‚ si `frontend/dist` existe ou via `ORATIO_FRONTEND_DIR`; accessible sur `/app` (d‚tection aussi depuis un bundle PyInstaller).
+
+## Premier lancement / téléchargements de modèles
+- Endpoint `GET /models/status`: indique si les modèles par défaut sont présents.
+- Endpoint `POST /models/download`: déclenche le téléchargement en tâche de fond (identique au script `scripts/download_models.py`), pour un onboarding "premier run" côté frontend.

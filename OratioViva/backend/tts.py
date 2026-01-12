@@ -78,6 +78,7 @@ class TTSService:
         use_stub: bool = False,
         fallback_stub: bool = True,
         provider: str = "inference",  # "inference" | "local" | "stub"
+        models_dir: Optional[Path] = None,
     ) -> None:
         self.audio_dir = audio_dir
         self.base_audio_url = base_audio_url.rstrip("/")
@@ -85,6 +86,7 @@ class TTSService:
         self.use_stub = use_stub
         self.fallback_stub = fallback_stub
         self.provider = provider
+        self.models_dir = models_dir
         self._clients: Dict[str, InferenceClient] = {}
         self._local_pipelines: Dict[str, object] = {}
         self.audio_dir.mkdir(parents=True, exist_ok=True)
@@ -251,19 +253,27 @@ class TTSService:
         style: Optional[str],
         created_at: datetime,
     ) -> AudioResult:
+        model_path = voice.model
+        pipeline_key = voice.model
+        if self.models_dir:
+            candidate = self.models_dir / voice.model.replace("/", "_")
+            if candidate.exists():
+                model_path = str(candidate)
+                pipeline_key = model_path
+
         try:
             from transformers import pipeline
             import numpy as np
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError("Local pipeline requires transformers and numpy installed") from exc
 
-        if voice.model not in self._local_pipelines:
-            self._local_pipelines[voice.model] = pipeline(
+        if pipeline_key not in self._local_pipelines:
+            self._local_pipelines[pipeline_key] = pipeline(
                 task="text-to-speech",
-                model=voice.model,
+                model=model_path,
                 device="cpu",
             )
-        tts = self._local_pipelines[voice.model]
+        tts = self._local_pipelines[pipeline_key]
         outputs = tts(text, forward_params={"speed": speed})
         audio = outputs["audio"] if isinstance(outputs, dict) else outputs
         sampling_rate = outputs.get("sampling_rate", 24000) if isinstance(outputs, dict) else 24000

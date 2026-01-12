@@ -11,9 +11,12 @@ import {
   deleteJobsBatch,
   exportZip,
   getApiBase,
+  fetchModelStatus,
+  downloadModels,
 } from "./api";
 
 const POLL_INTERVAL_MS = 1200;
+const MODEL_POLL_MS = 1500;
 
 export default function App() {
   const [text, setText] = useState("");
@@ -27,6 +30,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState(new Set());
   const [selectedJobs, setSelectedJobs] = useState(new Set());
+  const [modelState, setModelState] = useState({ needsDownload: false, downloading: false });
 
   useEffect(() => {
     fetchVoices()
@@ -39,6 +43,7 @@ export default function App() {
       .catch((err) => setStatus(err.message));
     refreshHistory();
     refreshJobs();
+    refreshModels();
   }, []);
 
   async function refreshHistory() {
@@ -59,6 +64,41 @@ export default function App() {
     }
   }
 
+  async function refreshModels() {
+    try {
+      const res = await fetchModelStatus();
+      setModelState({
+        needsDownload: res.needs_download,
+        downloading: res.downloading,
+        models: res.models,
+      });
+    } catch {
+      /* noop */
+    }
+  }
+
+  async function ensureModels() {
+    setModelState((s) => ({ ...s, downloading: true }));
+    try {
+      await downloadModels();
+      let attempts = 0;
+      while (attempts < 30) {
+        await new Promise((r) => setTimeout(r, MODEL_POLL_MS));
+        const res = await fetchModelStatus();
+        if (!res.needs_download) {
+          setModelState({ needsDownload: false, downloading: false, models: res.models });
+          return;
+        }
+        attempts += 1;
+      }
+      setStatus("Téléchargement des modèles: délai dépassé");
+    } catch (err) {
+      setStatus(err.message || "Erreur de téléchargement des modèles");
+    } finally {
+      setModelState((s) => ({ ...s, downloading: false }));
+    }
+  }
+
   const voiceOptions = useMemo(
     () =>
       voices.map((v) => (
@@ -68,6 +108,13 @@ export default function App() {
       )),
     [voices],
   );
+
+  const modelReady = !modelState.needsDownload && !modelState.downloading;
+  const modelBadgeText = modelState.downloading
+    ? "Telechargement..."
+    : modelState.needsDownload
+      ? "Modeles a installer"
+      : "Pret a generer";
 
   async function pollJob(jobId) {
     let attempts = 0;
@@ -210,6 +257,57 @@ export default function App() {
 
   return (
     <div className="page">
+      {modelState.needsDownload && (
+        <div className="overlay">
+          <div className="overlay-card">
+            <p className="eyebrow">Préparation</p>
+            <h2>Téléchargement des modèles</h2>
+            <p className="lede">
+              Premier démarrage: les modèles TTS vont être téléchargés automatiquement pour usage
+              hors-ligne.
+            </p>
+            <button className="button" onClick={ensureModels} disabled={modelState.downloading}>
+              {modelState.downloading ? "Téléchargement..." : "Installer les modèles"}
+            </button>
+            {modelState.models && (
+              <ul className="model-list">
+                {modelState.models.map((m) => (
+                  <li key={m.id}>
+                    <span>{m.repo_id}</span> — {m.exists ? "présent" : "manquant"}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="toolbar">
+        <div className="toolbar-left">
+          <img src="/favicon.ico" alt="OratioViva" className="toolbar-icon" />
+          <div>
+            <div className="toolbar-title">OratioViva Desktop</div>
+            <p className="toolbar-sub">
+              Serveur local: <code>{getApiBase()}</code>
+            </p>
+          </div>
+        </div>
+        <div className="toolbar-actions">
+          <span className={modelReady ? "badge badge-ok" : "badge badge-warn"}>
+            {modelBadgeText}
+          </span>
+          <button className="ghost" onClick={refreshModels}>
+            Modeles
+          </button>
+          <button className="ghost" onClick={refreshHistory}>
+            Historique
+          </button>
+          <button className="ghost" onClick={refreshJobs}>
+            Jobs
+          </button>
+        </div>
+      </div>
+
       <header className="hero">
         <div>
           <p className="eyebrow">OratioViva Studio</p>
