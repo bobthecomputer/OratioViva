@@ -14,6 +14,7 @@ DEFAULT_MODELS: Dict[str, str] = {
     "bark": "suno/bark-small",
     "speecht5": "microsoft/speecht5_tts",
     "speecht5_vocoder": "microsoft/speecht5_hifigan",
+    "mms": "facebook/mms-tts-eng",
 }
 
 

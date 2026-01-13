@@ -6,7 +6,8 @@ Param(
     [string]$DataDir = "data",
     [string]$IconPath = "assets/app.ico",
     [string]$Entrypoint = "backend\desktop_app.py",
-    [switch]$Windowed = $true
+    [switch]$Windowed = $true,
+    [switch]$OneDir = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -73,10 +74,17 @@ try {
 $env:ORATIO_DATA_DIR = $dataPath
 
 # Build executable (bundles frontend/dist + models if present)
+$buildModeArg = "--onefile"
+if ($OneDir) {
+    $buildModeArg = "--onedir"
+    Write-Host "Using onedir mode to avoid oversized onefile archives." -ForegroundColor Yellow
+} else {
+    Write-Host "Using onefile mode (may fail if archive exceeds 4GB; use -OneDir to switch)." -ForegroundColor Yellow
+}
 $pyinstallerArgs = @(
     "--noconfirm",
     "--clean",
-    "--onefile",
+    $buildModeArg,
     "--name", $AppName,
     $Entrypoint
 )

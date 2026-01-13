@@ -1,43 +1,45 @@
-# OratioViva (app desktop)
+# OratioViva (desktop app)
 
-Studio texte-vers-voix local (Kokoro / Parler). Un seul binaire Windows qui lance le backend et le frontend dans la m\u00eame fen\u00eatre.
+Studio texte-vers-voix local (Parler, Bark, SpeechT5, MMS) avec Kokoro via HF Inference si besoin. Un seul binaire Windows ouvre backend + frontend dans la meme fenetre.
 
-## Pr\u00e9requis
-- Windows, Python 3.11+, Node 18+. (Pas d'autres scripts \u00e0 ex\u00e9cuter.)
-- Pour un rendu vocal r\u00e9el : connexion internet le temps de t\u00e9l\u00e9charger les mod\u00e8les.
+## Prerequis
+- Windows, Python 3.11+, Node 18+.
+- Connexion internet pour telecharger les modeles la premiere fois (ensuite offline).
 
-## Construire l'exe (unique)
+## Construire l'exe
 ```
 cd OratioViva
 .\scripts\make_app.ps1 -AppName OratioViva -Windowed
 ```
+Options utiles : `-SkipModels` pour ne pas embarquer les modeles, `-OneDir` si PyInstaller onefile depasse 4GB.
+
 Ce script :
-- cr\u00e9e `.venv`, installe les d\u00e9ps backend
+- cree `.venv`, installe les deps backend
 - build le frontend
-- t\u00e9l\u00e9charge les mod\u00e8les (Kokoro + Parler) et les embarque
-- g\u00e9n\u00e8re `dist\OratioViva.exe` avec l'ic\u00f4ne
+- telecharge les modeles locaux (Kokoro, Parler, Bark Small, SpeechT5 + vocoder, MMS TTS) et les embarque
+- genere `dist\OratioViva.exe` (ou un dossier si `-OneDir`) avec l'icone
 
 ## Lancer
 ```
 .\dist\OratioViva.exe
 ```
-- La fen\u00eatre s'ouvre, backend d\u00e9j\u00e0 lanc\u00e9. Les donn\u00e9es sont dans `data\` (modifier via `ORATIO_DATA_DIR` avant de lancer l'exe).
-- Au premier lancement, l'appli t\u00e9l\u00e9charge les mod\u00e8les si besoin. L'\u00e9tiquette "Modeles a installer" passe en "Mode local" quand tout est pr\u00eat. En mode "stub" vous n'entendrez qu'un bip.
+- Fenetre unique, backend deja lance. Les donnees sont dans `data\` (changer via `ORATIO_DATA_DIR` avant de lancer l'exe).
+- Au premier lancement, l'appli telecharge les modeles si besoin. L'etiquette "Modeles a installer" passe en "Mode local" quand tout est pret. En mode "stub" vous n'entendrez qu'un bip.
 
-## Contr\u00f4les dans l'UI
-- Voix Kokoro/Parler, vitesse, style (prompt Parler).
-- Historique, lecture, t\u00e9l\u00e9chargement, export ZIP, suppression et gestion des jobs.
-- Badge d'\u00e9tat mod\u00e8les/provider + avertissement si mode stub.
+## Controles dans l'UI
+- Voix Parler/Bark/SpeechT5/MMS/Kokoro, vitesse, style (prompt Parler).
+- Historique, lecture, telechargement, export ZIP, suppression et gestion des jobs.
+- Onglet Analytics (provider local/inference/stub, modeles presents, metriques audio, derniers jobs).
+- Badge d'etat modeles/provider + avertissement si mode stub.
 
-## D\u00e9veloppement (optionnel)
+## Developpement (optionnel)
 - Backend local : `.\backend\.venv\Scripts\uvicorn backend.main:app --reload`
-- Déps TTS locales (Parler/Kokoro offline) : `pip install -r backend\requirements-tts.txt` (sinon stub ou Inference HF).
+- Deps TTS locales : `pip install -r backend\requirements-tts.txt` (Parler, Bark Small, SpeechT5 + vocoder, MMS). Kokoro reste via HF Inference en Python 3.13.
 - Frontend dev : `cd frontend && npm run dev` (utilise `VITE_API_BASE`)
 - Tests backend : `.\backend\.venv\Scripts\pytest -q`
 - Tests frontend : `cd frontend && npm test && npm run build`
 
 ## Points techniques
-- Provider auto : s'il trouve des mod\u00e8les locaux -> local; sinon token HF -> inference; sinon stub (bip).
-- Mod\u00e8les bundl\u00e9s via `scripts\make_app.ps1` (utilise `scripts\download_models.py`).
-- Outputs : `data\outputs\audio` + `history.json` (ignor\u00e9s par git).
-
+- Provider auto : si modeles locaux presents -> local; sinon token HF -> inference; sinon stub (bip).
+- Modeles bundles via `scripts\make_app.ps1` (utilise `scripts\download_models.py`).
+- Outputs : `data\outputs\audio` + `history.json` (ignores par git).

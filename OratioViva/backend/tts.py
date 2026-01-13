@@ -62,14 +62,21 @@ VOICE_PRESETS = [
         model="suno/bark-small",
         language="en",
         label="Bark Small EN",
-        description="Modèle Bark léger (<8GB VRAM), neutre",
+        description="Modele Bark leger (<8GB VRAM), neutre",
     ),
     VoicePreset(
         id="speecht5_en_0",
         model="microsoft/speecht5_tts",
         language="en",
         label="SpeechT5 EN",
-        description="SpeechT5 + HiFiGAN vocoder, speaker embed par défaut",
+        description="SpeechT5 + HiFiGAN vocoder, speaker embed par defaut",
+    ),
+    VoicePreset(
+        id="mms_en_0",
+        model="facebook/mms-tts-eng",
+        language="en",
+        label="MMS EN Warm",
+        description="Meta MMS TTS (CPU/<=8GB VRAM), voix naturelle style lecture.",
     ),
 ]
 
@@ -248,8 +255,6 @@ class TTSService:
         if model_id and not self._supports_local_model(model_id):
             return False
         if self.model_manager is not None:
-            if self.model_manager.needs_download():
-                return False
             for status in self.model_manager.status():
                 if status.exists and self._supports_local_model(status.repo_id):
                     return True
@@ -379,6 +384,17 @@ class TTSService:
             )
         if "speecht5" in lower_model:
             return self._synthesize_speecht5_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "mms-tts" in lower_model or "mms_tts" in lower_model:
+            return self._synthesize_mms_local(
                 text=text,
                 voice=voice,
                 job_id=job_id,
@@ -556,6 +572,60 @@ class TTSService:
             ).squeeze()
         waveform = speech.cpu().numpy()
         duration = self._write_array_to_wav(waveform, processor.feature_extractor.sampling_rate, destination)
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
+    def _synthesize_mms_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        try:
+            import torch
+            import torch.nn.functional as F
+            from transformers import AutoProcessor, VitsModel
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("MMS local mode requires transformers and torch installed") from exc
+
+        if model_path not in self._local_pipelines:
+            processor = AutoProcessor.from_pretrained(model_path)
+            model = VitsModel.from_pretrained(model_path)
+            model.eval()
+            self._local_pipelines[model_path] = (processor, model)
+        processor, model = self._local_pipelines[model_path]
+
+        inputs = processor(text=text, return_tensors="pt")
+        with torch.inference_mode():
+            waveform = model(**inputs).waveform
+
+        if waveform.ndim == 2:  # (batch, time)
+            waveform = waveform.unsqueeze(1)
+        if speed != 1.0:
+            waveform = F.interpolate(
+                waveform,
+                scale_factor=1 / speed,
+                mode="linear",
+                align_corners=False,
+            )
+        waveform = waveform.squeeze().cpu().numpy()
+
+        sampling_rate = getattr(model.config, "sampling_rate", 16000)
+        duration = self._write_array_to_wav(waveform, sampling_rate, destination)
         return AudioResult(
             job_id=job_id,
             audio_path=destination,

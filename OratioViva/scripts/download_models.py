@@ -23,6 +23,7 @@ DEFAULT_MODELS = {
     "bark": "suno/bark-small",
     "speecht5": "microsoft/speecht5_tts",
     "speecht5_vocoder": "microsoft/speecht5_hifigan",
+    "mms": "facebook/mms-tts-eng",
 }
 
 
@@ -34,17 +35,17 @@ def resolve_repo_ids(models: Iterable[str]) -> List[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Télécharge les modèles TTS nécessaires en local.")
+    parser = argparse.ArgumentParser(description="Telecharge les modeles TTS necessaires en local.")
     parser.add_argument(
         "--dest",
         default="models",
-        help="Dossier cible pour stocker les modèles (créé si absent).",
+        help="Dossier cible pour stocker les modeles (cree si absent).",
     )
     parser.add_argument(
         "--models",
         nargs="+",
         default=list(DEFAULT_MODELS.keys()),
-        help="Liste de modèles (alias kokoro/parler ou repo_id HF).",
+        help="Liste de modeles (alias kokoro/parler/bark/speecht5/mms ou repo_id HF).",
     )
     parser.add_argument(
         "--token",

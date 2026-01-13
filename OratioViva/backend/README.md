@@ -1,6 +1,6 @@
 # Backend FastAPI (OratioViva)
 
-API TTS avec FastAPI. Par defaut, la synthese passe par Hugging Face Inference (Kokoro-82M, option Parler-TTS Mini v1.1). Un mode stub (tone WAV) est disponible pour tester sans modele.
+API TTS avec FastAPI. Provider auto: local si des modeles sont presents, sinon Hugging Face Inference si `HF_TOKEN` est defini, sinon stub (bip). Local par defaut: Parler-TTS mini, Bark Small, SpeechT5 + HiFiGAN, MMS TTS; Kokoro reste via Inference en Python 3.13.
 
 ## Installation
 ```
@@ -9,8 +9,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
-
-Deps TTS locales (Parler, audio offline) :
+Deps TTS locales (torch/transformers/parler-tts/bark/speecht5/mms):
 ```
 pip install -r requirements-tts.txt
 ```
@@ -21,10 +20,10 @@ pip install -r requirements-tts.txt
 - `ORATIO_CLEAN_MAX_HOURS` (defaut 48): age max des WAV avant purge au startup/cleanup.
 - `ORATIO_CLEAN_MAX_HISTORY` (defaut 200): nombre max d'entrees conservees dans `history.json`.
 - `ORATIO_JOBS_MAX` (defaut 300, via code): jobs conserves dans `outputs/jobs.json`.
-- `ORATIO_TTS_PROVIDER` (`auto` | `local` | `inference` | `stub`): choisir la source TTS. `auto` priorise local si modèles présents, sinon inference (token HF), sinon stub. `local` attend transformers+numpy (+ torch) installes.
-- `ORATIO_DATA_DIR`: force le dossier racine des outputs (`outputs/`). Quand l'app est packagée (PyInstaller), le cwd est utilisé par défaut.
-- `ORATIO_FRONTEND_DIR`: chemin vers un dossier static (ex: `frontend/dist`) qui sera servi sur `/app` (sinon auto-détection du bundle PyInstaller).
-- `ORATIO_MODELS_DIR`: chemin vers des modèles téléchargés localement (structure `hexgrad_Kokoro-82M`, `parler-tts_parler-tts-mini-v1.1`). Quand packagée, `_MEIPASS/models` est auto-détecté si présent.
+- `ORATIO_TTS_PROVIDER` (`auto` | `local` | `inference` | `stub`): choisir la source TTS. `auto` priorise local si un modele supporte le mode local, sinon inference (token HF), sinon stub. `local` attend transformers+numpy+torch installes.
+- `ORATIO_DATA_DIR`: force le dossier racine des outputs (`outputs/`). Quand l'app est packegee (PyInstaller), le cwd est utilise par defaut.
+- `ORATIO_FRONTEND_DIR`: chemin vers un dossier static (ex: `frontend/dist`) servi sur `/app` (sinon auto-detection du bundle PyInstaller).
+- `ORATIO_MODELS_DIR`: chemin vers des modeles telecharges localement (structure `hexgrad_Kokoro-82M`, `parler-tts_parler-tts-mini-v1.1`, `facebook_mms-tts-eng`, etc.). `_MEIPASS/models` est auto-detecte si present.
 
 ## Demarrer l'API
 ```
@@ -34,43 +33,38 @@ uvicorn backend.main:app --reload
 ## Endpoints
 - `GET /health`
 - `GET /voices`
-- `POST /synthesize?async_mode=false` body:
-  - `text` (str, obligatoire)
-  - `voice_id` (str, repertorie via `/voices`)
-  - `speed` (0.5-2.0)
-  - `style` (optionnel, prevu pour Parler)
-- `GET /jobs/{job_id}`: statut d'un job (queued, running, succeeded, failed)
-- `GET /jobs?limit=50`: liste des jobs recents (persistes dans `outputs/jobs.json`)
-- `DELETE /jobs/{job_id}`: retire un job du store (ne touche pas l'audio/historique)
-- `POST /jobs/batch_delete` body `{ "job_ids": [] }`
+- `POST /synthesize?async_mode=false` body: `text`, `voice_id`, `speed`, `style`
+- `GET /jobs/{job_id}`
+- `GET /jobs?limit=50`
+- `DELETE /jobs/{job_id}`
+- `POST /jobs/batch_delete`
 - `GET /history?limit=20`
-- `DELETE /history/{job_id}`: supprime l'entree et le fichier audio associe si present
-- `POST /history/batch_delete` body `{ "job_ids": [], "delete_audio": true }`
-- `POST /maintenance/cleanup`: purge les vieux WAV et tronque l'historique (selon env ci-dessus)
-- `POST /export/zip`: body `{ "job_ids": ["..."] }` -> renvoie un zip des WAV correspondants
+- `DELETE /history/{job_id}`
+- `POST /history/batch_delete`
+- `POST /maintenance/cleanup`
+- `POST /export/zip`
+- `GET /models/status` / `POST /models/download`
+- `GET /analytics` (provider, modeles disponibles, metriques jobs/audio)
 
 Les fichiers sont ecrits dans `outputs/audio/` et listes dans `outputs/history.json` (ignores par git).
 
 ## Job store (memoire)
-- Jobs gardes en memoire et persistés dans `outputs/jobs.json` (limite 300 par defaut).
+- Jobs gardes en memoire et persistes dans `outputs/jobs.json` (limite 300 par defaut).
 - Si l'API redemarre, les statuts sont recharges depuis `jobs.json` (les WAV anciens peuvent etre purges selon la config cleanup).
 - Pour un stockage plus robuste, on pourra remplacer par SQLite/Redis plus tard.
 
 ## Mode TTS local (hors Inference API)
 - Passer `ORATIO_TTS_PROVIDER=local` pour activer le pipeline local.
-- Installer les deps (exemple) :
-  ```
-  pip install -r requirements-tts.txt
-  ```
-- Modeles par defaut: `hexgrad/Kokoro-82M` et `parler-tts/parler-tts-mini-v1.1` via transformers `pipeline("text-to-speech")`.
+- Installer les deps : `pip install -r requirements-tts.txt`.
+- Modeles par defaut: `parler-tts/parler-tts-mini-v1.1`, `suno/bark-small`, `microsoft/speecht5_tts` + `microsoft/speecht5_hifigan`, `facebook/mms-tts-eng`. Kokoro local indisponible sous Python 3.13 faute de package compatible.
 - Si les deps manquent, le service retombe sur le stub si `fallback_stub=True`.
-- Kokoro local n'est pas disponible sous Python 3.13 faute de package `kokoro` compatible; Kokoro utilisera l'Inference API (HF_TOKEN) ou le stub.
 
 ## Packaging / offline
-- Commande unique (deps, frontend build, modèles, exe onefile) : `.\scripts\make_app.ps1`
-- T‚l‚charger les modŠles (offline) : `python scripts\download_models.py --dest models` (utilise `HF_TOKEN`).
-- Servir le frontend build‚ si `frontend/dist` existe ou via `ORATIO_FRONTEND_DIR`; accessible sur `/app` (d‚tection aussi depuis un bundle PyInstaller).
+- Commande unique (deps, frontend build, modeles, exe) : `..\scripts\make_app.ps1`.
+- Switch `-OneDir` recommande si le mode onefile PyInstaller depasse 4GB; `-SkipModels` evite de les embarquer.
+- Telecharger les modeles: `python scripts\download_models.py --dest models` (utilise `HF_TOKEN`).
+- Le frontend build (`frontend/dist`) est servi sur `/app` (detecte aussi depuis un bundle PyInstaller).
 
-## Premier lancement / téléchargements de modèles
-- Endpoint `GET /models/status`: indique si les modèles par défaut sont présents.
-- Endpoint `POST /models/download`: déclenche le téléchargement en tâche de fond (identique au script `scripts/download_models.py`), pour un onboarding "premier run" côté frontend.
+## Premier lancement / telechargements de modeles
+- Endpoint `GET /models/status`: indique si les modeles par defaut sont presents.
+- Endpoint `POST /models/download`: declenche le telechargement en tache de fond (identique au script `scripts/download_models.py`).

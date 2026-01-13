@@ -1,5 +1,10 @@
 # Journal de progression
 
+### 2026-01-13 16:20
+- Fait: Ajout d'un modele local supplementaire MMS TTS (`facebook/mms-tts-eng`) + preset voix, branchement dans le pipeline local (transformers/torch) et dans les telechargements par defaut. Provider auto accepte les modeles locaux partiels (ne bloque plus si un seul modele manque). Option `-OneDir` ajoutee a `scripts/make_app.ps1` pour eviter la limite 4GB de PyInstaller onefile. README racine et backend mis a jour (nouveaux modeles, Analytics, build onedir), script download_models en ASCII clair.
+- A faire: Relancer `.\scripts\make_app.ps1 -Windowed -OneDir` pour tester le build sans l'erreur `struct.error`. Verifier le telechargement du modele MMS et la synthese locale (Parler/Bark/SpeechT5/MMS). Eventuellement reinstaller les deps TTS (`pip install -r backend\requirements-tts.txt`) pour remettre numpy 2.2.1 et eviter le conflit opencv.
+- Blocages/risques: Build onefile PyInstaller reste trop volumineux; preferer onedir. Kokoro local toujours indispo en Python 3.13 (Inference ou stub). Modele MMS ajoute augmente la taille du bundle si telecharge.
+
 ### 2026-01-13 00:50
 - Fait: PyInstaller rebâti (dist\OratioViva.exe) avec modèles bundle + frontend; make_app.ps1 installe désormais torch/torchaudio/transformers 4.46.1 + parler-tts via requirements-tts; Parler TTS fonctionne en local (génération testée). Kokoro local signalé comme non supporté (package kokoro indisponible py3.13) => message provider côté UI; requirements TTS séparés pour installations légères.
 - A faire: surveiller une release kokoro compatible py3.13 pour activer le mode local; sinon rester sur inference HF (HF_TOKEN) ou stub.
