@@ -3,3 +3,4 @@ torchaudio==2.9.1
 transformers==4.46.1
 numpy==2.2.1
 parler-tts==0.2.3
+fsspec==2025.10.0
