@@ -49,6 +49,10 @@ export async function downloadModels(models) {
   });
 }
 
+export async function fetchAnalytics() {
+  return jsonFetch("/analytics");
+}
+
 export async function deleteHistory(jobId) {
   const resp = await fetch(`${API_BASE}/history/${jobId}`, { method: "DELETE" });
   if (!resp.ok) {

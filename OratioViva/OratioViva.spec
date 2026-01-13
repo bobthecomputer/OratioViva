@@ -5,7 +5,7 @@ a = Analysis(
     ['backend\\desktop_app.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\paul\\OratioViva\\OratioViva\\frontend\\dist', 'frontend/dist')],
+    datas=[('C:\\Users\\paul\\OratioViva\\OratioViva\\frontend\\dist', 'frontend/dist'), ('C:\\Users\\paul\\OratioViva\\OratioViva\\models', 'models')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

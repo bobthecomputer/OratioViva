@@ -10,6 +10,11 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Deps TTS locales (Parler, audio offline) :
+```
+pip install -r requirements-tts.txt
+```
+
 ## Variables d'environnement
 - `HF_TOKEN` ou `HUGGINGFACEHUB_API_TOKEN`: token Hugging Face recommande pour l'Inference API.
 - `ORATIO_TTS_STUB=1`: force le mode stub (aucun appel modele).
@@ -55,10 +60,11 @@ Les fichiers sont ecrits dans `outputs/audio/` et listes dans `outputs/history.j
 - Passer `ORATIO_TTS_PROVIDER=local` pour activer le pipeline local.
 - Installer les deps (exemple) :
   ```
-  pip install torch transformers numpy
+  pip install -r requirements-tts.txt
   ```
 - Modeles par defaut: `hexgrad/Kokoro-82M` et `parler-tts/parler-tts-mini-v1.1` via transformers `pipeline("text-to-speech")`.
 - Si les deps manquent, le service retombe sur le stub si `fallback_stub=True`.
+- Kokoro local n'est pas disponible sous Python 3.13 faute de package `kokoro` compatible; Kokoro utilisera l'Inference API (HF_TOKEN) ou le stub.
 
 ## Packaging / offline
 - Commande unique (deps, frontend build, modèles, exe onefile) : `.\scripts\make_app.ps1`

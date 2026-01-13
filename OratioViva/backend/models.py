@@ -11,6 +11,9 @@ from huggingface_hub import snapshot_download
 DEFAULT_MODELS: Dict[str, str] = {
     "kokoro": "hexgrad/Kokoro-82M",
     "parler": "parler-tts/parler-tts-mini-v1.1",
+    "bark": "suno/bark-small",
+    "speecht5": "microsoft/speecht5_tts",
+    "speecht5_vocoder": "microsoft/speecht5_hifigan",
 }
 
 

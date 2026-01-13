@@ -8,7 +8,7 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from huggingface_hub import InferenceClient
 
@@ -57,6 +57,20 @@ VOICE_PRESETS = [
         label="Parler Neutral",
         description="Parler-TTS avec prompt de style",
     ),
+    VoicePreset(
+        id="bark_en_0",
+        model="suno/bark-small",
+        language="en",
+        label="Bark Small EN",
+        description="Modèle Bark léger (<8GB VRAM), neutre",
+    ),
+    VoicePreset(
+        id="speecht5_en_0",
+        model="microsoft/speecht5_tts",
+        language="en",
+        label="SpeechT5 EN",
+        description="SpeechT5 + HiFiGAN vocoder, speaker embed par défaut",
+    ),
 ]
 
 VOICE_BY_ID: Dict[str, VoicePreset] = {voice.id: voice for voice in VOICE_PRESETS}
@@ -96,6 +110,7 @@ class TTSService:
         self.model_manager = model_manager
         self._clients: Dict[str, InferenceClient] = {}
         self._local_pipelines: Dict[str, object] = {}
+        self._parler_models: Dict[str, Tuple[Any, Any]] = {}
         self.audio_dir.mkdir(parents=True, exist_ok=True)
 
     def list_voices(self):
@@ -119,7 +134,7 @@ class TTSService:
         voice = VOICE_BY_ID[voice_id]
         created_at = datetime.now(timezone.utc)
 
-        resolved_provider = provider or self._resolve_provider()
+        resolved_provider = provider or self._resolve_provider(voice.model)
         use_stub = self.use_stub or resolved_provider == "stub"
 
         if use_stub:
@@ -187,11 +202,39 @@ class TTSService:
             self._clients[model] = InferenceClient(model=model, token=self.hf_token)
         return self._clients[model]
 
-    def _resolve_provider(self) -> str:
+    def _resolve_model_path(self, model_name: str) -> str:
+        model_path = model_name
+        if self.models_dir:
+            candidate = self.models_dir / model_name.replace("/", "_")
+            if candidate.exists():
+                model_path = str(candidate)
+        return model_path
+
+    def _local_support(self, model_id: str) -> Tuple[bool, Optional[str]]:
+        lower_id = model_id.lower()
+        if "parler-tts" in lower_id:
+            try:
+                import parler_tts  # type: ignore  # noqa: F401
+            except Exception:
+                return False, "Parler local requiert le package parler-tts."
+            return True, None
+        if "kokoro" in lower_id:
+            try:
+                import kokoro  # type: ignore  # noqa: F401
+            except Exception:
+                return False, "Kokoro local indisponible (package kokoro non supporte en Python 3.13); utilisez HF_TOKEN pour l'inference ou restez en stub."
+            return True, None
+        return True, None
+
+    def _supports_local_model(self, model_id: str) -> bool:
+        supported, _ = self._local_support(model_id)
+        return supported
+
+    def _resolve_provider(self, model_id: Optional[str] = None) -> str:
         if self.provider in {"local", "inference", "stub"}:
             return self.provider
         # auto: prefer local models, then inference (token), else stub
-        if self._has_local_models():
+        if self._has_local_models(model_id):
             return "local"
         if self.hf_token:
             return "inference"
@@ -201,12 +244,35 @@ class TTSService:
         """Expose the provider resolved at runtime."""
         return self._resolve_provider()
 
-    def _has_local_models(self) -> bool:
+    def _has_local_models(self, model_id: Optional[str] = None) -> bool:
+        if model_id and not self._supports_local_model(model_id):
+            return False
         if self.model_manager is not None:
-            return not self.model_manager.needs_download()
+            if self.model_manager.needs_download():
+                return False
+            for status in self.model_manager.status():
+                if status.exists and self._supports_local_model(status.repo_id):
+                    return True
+            return False
         if not self.models_dir:
             return False
         return any(self.models_dir.glob("*"))
+
+    def local_support(self, model_id: str) -> Tuple[bool, Optional[str]]:
+        """Expose local support info for API responses."""
+        return self._local_support(model_id)
+
+    def provider_message(self, statuses: list[Any]) -> Optional[str]:
+        """Give a human-readable reason when local provider is unavailable."""
+        resolved = self.current_provider()
+        if resolved in {"local", "stub"}:
+            for status in statuses:
+                supported, reason = self._local_support(getattr(status, "repo_id", ""))
+                if not supported and reason:
+                    return reason
+        if resolved == "stub" and not self.hf_token:
+            return "Aucun token HF fourni; utilisation du mode stub."
+        return None
 
     def _write_wav_bytes(self, audio_bytes: bytes, destination: Path, speed: float) -> float:
         with wave.open(io.BytesIO(audio_bytes), "rb") as wav_in:
@@ -285,13 +351,48 @@ class TTSService:
         style: Optional[str],
         created_at: datetime,
     ) -> AudioResult:
-        model_path = voice.model
-        pipeline_key = voice.model
-        if self.models_dir:
-            candidate = self.models_dir / voice.model.replace("/", "_")
-            if candidate.exists():
-                model_path = str(candidate)
-                pipeline_key = model_path
+        model_path = self._resolve_model_path(voice.model)
+        model_key = model_path
+
+        lower_model = voice.model.lower()
+        if "parler-tts" in lower_model:
+            return self._synthesize_parler_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "bark" in lower_model:
+            return self._synthesize_bark_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "speecht5" in lower_model:
+            return self._synthesize_speecht5_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "kokoro" in lower_model:
+            raise RuntimeError(
+                "Local Kokoro inference requires the kokoro package; "
+                "install it or use ORATIO_TTS_PROVIDER=inference/stub."
+            )
 
         try:
             from transformers import pipeline
@@ -299,18 +400,162 @@ class TTSService:
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError("Local pipeline requires transformers and numpy installed") from exc
 
-        if pipeline_key not in self._local_pipelines:
-            self._local_pipelines[pipeline_key] = pipeline(
+        if model_key not in self._local_pipelines:
+            self._local_pipelines[model_key] = pipeline(
                 task="text-to-speech",
-                model=model_path,
+                model=model_key,
                 device="cpu",
+                trust_remote_code=True,
             )
-        tts = self._local_pipelines[pipeline_key]
+        tts = self._local_pipelines[model_key]
         outputs = tts(text, forward_params={"speed": speed})
         audio = outputs["audio"] if isinstance(outputs, dict) else outputs
         sampling_rate = outputs.get("sampling_rate", 24000) if isinstance(outputs, dict) else 24000
 
         duration = self._write_array_to_wav(audio, sampling_rate, destination)
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
+    def _synthesize_parler_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        try:
+            import torch
+            from parler_tts import ParlerTTSForConditionalGeneration
+            from transformers import AutoTokenizer
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("Parler-TTS local mode requires the parler-tts package installed") from exc
+
+        if model_path not in self._parler_models:
+            model = ParlerTTSForConditionalGeneration.from_pretrained(model_path).to("cpu")
+            model.eval()
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
+            self._parler_models[model_path] = (model, tokenizer)
+        model, tokenizer = self._parler_models[model_path]
+
+        device = next(model.parameters()).device
+        description = style or "Neutral speaker, clear voice, studio quality."
+        desc_ids = tokenizer(description, return_tensors="pt").input_ids.to(device)
+        prompt_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
+
+        with torch.inference_mode():
+            audio = model.generate(input_ids=desc_ids, prompt_input_ids=prompt_ids)
+        waveform = audio.cpu().numpy().squeeze()
+        duration = self._write_array_to_wav(waveform, model.config.sampling_rate, destination)
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
+    def _synthesize_bark_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        try:
+            from transformers import pipeline
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("Bark local mode requires transformers installed") from exc
+
+        model_key = model_path
+        if model_key not in self._local_pipelines:
+            self._local_pipelines[model_key] = pipeline(
+                task="text-to-audio",
+                model=model_key,
+                device="cpu",
+                trust_remote_code=True,
+            )
+        bark = self._local_pipelines[model_key]
+        outputs = bark(text)
+        audio = outputs["audio"] if isinstance(outputs, dict) else outputs
+        sampling_rate = outputs.get("sampling_rate", 22050) if isinstance(outputs, dict) else 22050
+        duration = self._write_array_to_wav(audio, sampling_rate, destination)
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
+    def _synthesize_speecht5_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        try:
+            import torch
+            from transformers import SpeechT5ForTextToSpeech, SpeechT5HifiGan, SpeechT5Processor
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("SpeechT5 local mode requires transformers installed") from exc
+
+        if model_path not in self._local_pipelines:
+            vocoder_path = self._resolve_model_path("microsoft/speecht5_hifigan")
+            processor = SpeechT5Processor.from_pretrained(model_path)
+            model = SpeechT5ForTextToSpeech.from_pretrained(model_path)
+            vocoder = SpeechT5HifiGan.from_pretrained(vocoder_path)
+            self._local_pipelines[model_path] = (processor, model, vocoder)
+        processor, model, vocoder = self._local_pipelines[model_path]
+
+        inputs = processor(text=text, return_tensors="pt")
+        speaker_embeddings = torch.zeros((1, 512))  # neutral speaker embedding
+
+        with torch.inference_mode():
+            speech = model.generate_speech(
+                inputs["input_ids"],
+                speaker_embeddings,
+                vocoder=vocoder,
+            )
+        if speed != 1.0:
+            # Simple resample by adjusting frame rate via numpy; keep it lightweight
+            speech = torch.nn.functional.interpolate(
+                speech.unsqueeze(0).unsqueeze(0),
+                scale_factor=1 / speed,
+                mode="linear",
+                align_corners=False,
+            ).squeeze()
+        waveform = speech.cpu().numpy()
+        duration = self._write_array_to_wav(waveform, processor.feature_extractor.sampling_rate, destination)
         return AudioResult(
             job_id=job_id,
             audio_path=destination,

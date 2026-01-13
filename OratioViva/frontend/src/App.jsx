@@ -11,12 +11,14 @@ import {
   fetchJob,
   fetchJobs,
   fetchModelStatus,
+  fetchAnalytics,
   fetchVoices,
   getApiBase,
 } from "./api";
 
 const POLL_INTERVAL_MS = 1200;
 const MODEL_POLL_MS = 1500;
+const ANALYTICS_POLL_MS = 3000;
 
 export default function App() {
   const [text, setText] = useState("");
@@ -30,13 +32,16 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState(new Set());
   const [selectedJobs, setSelectedJobs] = useState(new Set());
+  const [view, setView] = useState("studio"); // studio | analytics
   const [modelState, setModelState] = useState({
     needsDownload: false,
     downloading: false,
     provider: "auto",
+    providerMessage: "",
     models: [],
   });
   const [startedAutoDownload, setStartedAutoDownload] = useState(false);
+  const [analytics, setAnalytics] = useState(null);
 
   useEffect(() => {
     fetchVoices()
@@ -78,6 +83,7 @@ export default function App() {
         downloading: res.downloading,
         models: res.models,
         provider: res.provider || "auto",
+        providerMessage: res.provider_message || "",
       });
     } catch {
       /* noop */
@@ -90,6 +96,26 @@ export default function App() {
       ensureModels();
     }
   }, [modelState.needsDownload, modelState.downloading, startedAutoDownload]);
+
+  useEffect(() => {
+    let timer;
+    if (view === "analytics") {
+      fetchAnalyticsData();
+      timer = setInterval(fetchAnalyticsData, ANALYTICS_POLL_MS);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [view]);
+
+  async function fetchAnalyticsData() {
+    try {
+      const res = await fetchAnalytics();
+      setAnalytics(res);
+    } catch (err) {
+      setStatus(err.message || "Analytics indisponible");
+    }
+  }
 
   async function ensureModels() {
     setModelState((s) => ({ ...s, downloading: true }));
@@ -105,6 +131,7 @@ export default function App() {
             downloading: false,
             models: res.models,
             provider: res.provider || "auto",
+            providerMessage: res.provider_message || "",
           });
           return;
         }
@@ -320,12 +347,20 @@ export default function App() {
         </div>
         <div className="toolbar-actions">
           <span className={modelReady ? "badge badge-ok" : "badge badge-warn"}>{modelBadgeText}</span>
+          <button className={`ghost ${view === "studio" ? "active" : ""}`} onClick={() => setView("studio")}>
+            Studio
+          </button>
+          <button className={`ghost ${view === "analytics" ? "active" : ""}`} onClick={() => setView("analytics")}>
+            Analytics
+          </button>
           <button className="ghost" onClick={refreshModels}>Modeles</button>
           <button className="ghost" onClick={refreshHistory}>Historique</button>
           <button className="ghost" onClick={refreshJobs}>Jobs</button>
         </div>
       </div>
 
+      {view === "studio" && (
+        <>
       <header className="hero">
         <div>
           <p className="eyebrow">OratioViva Studio</p>
@@ -337,6 +372,9 @@ export default function App() {
             <p className="lede warning">
               Mode stub (bip de test). Installez les modeles pour entendre une vraie voix.
             </p>
+          )}
+          {modelState.providerMessage && (
+            <p className="lede warning">{modelState.providerMessage}</p>
           )}
         </div>
         <div className="logo-wrap">
@@ -486,6 +524,61 @@ export default function App() {
           {jobs.length === 0 && <p className="muted">Aucun job en cours.</p>}
         </div>
       </section>
+        </>
+      )}
+
+      {view === "analytics" && (
+        <main className="grid analytics">
+          <section className="card">
+            <p className="eyebrow">Runtime</p>
+            <h2>Provider status</h2>
+            <p className="lede">
+              Provider: <strong>{analytics?.provider || modelState.provider}</strong>
+            </p>
+            {analytics?.provider_message && <p className="lede warning">{analytics.provider_message}</p>}
+            <h3>Models</h3>
+            <ul className="model-list">
+              {(analytics?.models || modelState.models || []).map((m) => (
+                <li key={m.repo_id || m.id}>
+                  <span>{m.repo_id || m.id}</span> — {m.exists ? "present" : "missing"} —{" "}
+                  {m.local_supported ? "local ok" : "local unavailable"}
+                  {m.local_reason ? ` (${m.local_reason})` : ""}
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="card">
+            <p className="eyebrow">Activity</p>
+            <h2>Metrics</h2>
+            <p>History items: {analytics?.counts?.history ?? history.length}</p>
+            <p>Jobs stored: {analytics?.counts?.jobs ?? jobs.length}</p>
+            <p>
+              Audio duration (history):{" "}
+              {analytics?.counts?.audio_duration_seconds
+                ? `${(analytics.counts.audio_duration_seconds / 60).toFixed(1)} min`
+                : "…"}
+            </p>
+            <h3>Recent jobs</h3>
+            <ul className="model-list">
+              {(analytics?.jobs_recent || []).map((job) => (
+                <li key={job.job_id}>
+                  {job.job_id} — {job.status} — {job.voice_id} ({job.model || "?"})
+                </li>
+              ))}
+            </ul>
+            <h3>Recent history</h3>
+            <ul className="model-list">
+              {(analytics?.history_recent || []).map((item) => (
+                <li key={item.job_id}>
+                  {item.text_preview} — {item.model} — {item.voice_id} —{" "}
+                  {item.duration_seconds ? `${item.duration_seconds.toFixed(2)}s` : "n/a"}
+                </li>
+              ))}
+            </ul>
+          </section>
+        </main>
+      )}
     </div>
   );
 }

@@ -31,6 +31,7 @@ Ce script :
 
 ## D\u00e9veloppement (optionnel)
 - Backend local : `.\backend\.venv\Scripts\uvicorn backend.main:app --reload`
+- Déps TTS locales (Parler/Kokoro offline) : `pip install -r backend\requirements-tts.txt` (sinon stub ou Inference HF).
 - Frontend dev : `cd frontend && npm run dev` (utilise `VITE_API_BASE`)
 - Tests backend : `.\backend\.venv\Scripts\pytest -q`
 - Tests frontend : `cd frontend && npm test && npm run build`

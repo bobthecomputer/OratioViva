@@ -215,12 +215,20 @@ def models_status():
     statuses = model_manager.status()
     return {
         "models": [
-            {"id": s.id, "repo_id": s.repo_id, "exists": s.exists, "path": str(s.path)}
+            {
+                "id": s.id,
+                "repo_id": s.repo_id,
+                "exists": s.exists,
+                "path": str(s.path),
+                "local_supported": tts_service.local_support(s.repo_id)[0],
+                "local_reason": tts_service.local_support(s.repo_id)[1],
+            }
             for s in statuses
         ],
         "downloading": model_manager.downloading,
         "needs_download": model_manager.needs_download(),
         "provider": tts_service.current_provider(),
+        "provider_message": tts_service.provider_message(statuses),
     }
 
 
@@ -234,6 +242,35 @@ def models_download(body: ModelDownloadRequest, background_tasks: BackgroundTask
 
     background_tasks.add_task(_download)
     return {"status": "started"}
+
+
+@app.get("/analytics")
+def analytics():
+    statuses = model_manager.status()
+    history = load_history()
+    jobs = job_store.list(limit=100)
+    audio_duration = sum((item.get("duration_seconds") or 0) for item in history)
+    return {
+        "provider": tts_service.current_provider(),
+        "provider_message": tts_service.provider_message(statuses),
+        "models": [
+            {
+                "id": s.id,
+                "repo_id": s.repo_id,
+                "exists": s.exists,
+                "local_supported": tts_service.local_support(s.repo_id)[0],
+                "local_reason": tts_service.local_support(s.repo_id)[1],
+            }
+            for s in statuses
+        ],
+        "counts": {
+            "history": len(history),
+            "jobs": len(jobs),
+            "audio_duration_seconds": audio_duration,
+        },
+        "jobs_recent": [j for j in jobs[:5]],
+        "history_recent": history[:5],
+    }
 
 
 def _record_history(result, text: str) -> None:

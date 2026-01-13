@@ -1,5 +1,15 @@
 # Journal de progression
 
+### 2026-01-13 00:50
+- Fait: PyInstaller rebâti (dist\OratioViva.exe) avec modèles bundle + frontend; make_app.ps1 installe désormais torch/torchaudio/transformers 4.46.1 + parler-tts via requirements-tts; Parler TTS fonctionne en local (génération testée). Kokoro local signalé comme non supporté (package kokoro indisponible py3.13) => message provider côté UI; requirements TTS séparés pour installations légères.
+- A faire: surveiller une release kokoro compatible py3.13 pour activer le mode local; sinon rester sur inference HF (HF_TOKEN) ou stub.
+- Blocages/risques: Kokoro local non supporté faute de lib officielle; provider auto repasse en stub pour Kokoro sans HF_TOKEN. Build PyInstaller volumineux (dépendances audio lourdes).
+
+### 2026-01-13 01:26
+- Fait: Analytics tab (provider status, model availability, counts, recent jobs/history) + endpoint /analytics. UI badge affiche les raisons de fallback (Kokoro local indispo). Deps TTS isolées (requirements-tts) et script make_app mis à jour. Tests backend (pytest) et frontend (npm test) repassés.
+- A faire: Attendre un package kokoro compatible py3.13 ou intégrer un backend kokoro custom pour le mode local; sinon rester sur inference HF pour Kokoro.
+- Blocages/risques: Kokoro local toujours indispo; PyInstaller inclut libs audio volumineuses.
+
 ### 2026-01-12 19:10
 - Fait: UI simplifiee (badge provider, auto-telechargement modeles, avertissement stub, API base relative), backend TTS auto (provider auto/local prioritaire, plus de fallback silencieux), scripts reduits a make_app.ps1 unique, README refait pour mode fenetre uniquement.
 - A faire: relancer .\\scripts\\make_app.ps1 -AppName OratioViva -Windowed pour bundler les modeles et tester l'audio reel (Kokoro/Parler).

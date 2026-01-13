@@ -26,6 +26,12 @@ if (-not (Test-Path ".venv")) {
 $python = ".\.venv\Scripts\python.exe"
 & $python -m pip install --upgrade pip
 & $python -m pip install -r requirements.txt
+if (-not $SkipModels) {
+    Write-Host "Installing local TTS deps (torch/torchaudio/transformers/parler-tts)..." -ForegroundColor Green
+    & $python -m pip install -r requirements-tts.txt
+} else {
+    Write-Host "Skipping local TTS deps (SkipModels set)" -ForegroundColor Yellow
+}
 & $python -m pip install pyinstaller
 Pop-Location
 
@@ -48,7 +54,7 @@ if (-not $SkipModels) {
     $modelTimer = [System.Diagnostics.Stopwatch]::StartNew()
     & ".\backend\.venv\Scripts\python.exe" ".\scripts\download_models.py" --dest $ModelsDest
     $modelTimer.Stop()
-    Write-Host ("Models ready in {0:mm\\:ss}" -f $modelTimer.Elapsed) -ForegroundColor Green
+    Write-Host ("Models ready in {0:N1}s" -f $modelTimer.Elapsed.TotalSeconds) -ForegroundColor Green
     $modelsPath = (Resolve-Path $ModelsDest).Path
 } elseif (Test-Path $ModelsDest) {
     $modelsPath = (Resolve-Path $ModelsDest).Path
