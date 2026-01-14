@@ -24,6 +24,7 @@ pip install -r requirements-tts.txt
 - `ORATIO_DATA_DIR`: force le dossier racine des outputs (`outputs/`). Quand l'app est packegee (PyInstaller), le cwd est utilise par defaut.
 - `ORATIO_FRONTEND_DIR`: chemin vers un dossier static (ex: `frontend/dist`) servi sur `/app` (sinon auto-detection du bundle PyInstaller).
 - `ORATIO_MODELS_DIR`: chemin vers des modeles telecharges localement (structure `hexgrad_Kokoro-82M`, `parler-tts_parler-tts-mini-v1.1`, `facebook_mms-tts-eng`, etc.). `_MEIPASS/models` est auto-detecte si present.
+- `ORATIO_OPTIONAL_MODELS`: liste d'alias separes par des virgules a ne pas rendre obligatoires ni a telecharger par defaut (`kokoro` par defaut, pratique si vous ne voulez pas Kokoro). Retirez-les pour forcer le telechargement.
 
 ## Demarrer l'API
 ```

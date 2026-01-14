@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
 from huggingface_hub import snapshot_download
 
@@ -27,11 +27,18 @@ class ModelStatus:
 
 
 class ModelManager:
-    def __init__(self, base_dir: Path, models_dir: Optional[Path], token: Optional[str]) -> None:
+    def __init__(
+        self,
+        base_dir: Path,
+        models_dir: Optional[Path],
+        token: Optional[str],
+        optional_models: Optional[Iterable[str]] = None,
+    ) -> None:
         self.base_dir = base_dir
         self.models_dir = models_dir or (base_dir / "models")
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.token = token
+        self.optional_models: Set[str] = {m.lower() for m in (optional_models or [])}
         self._lock = threading.Lock()
         self._downloading = False
 
@@ -47,7 +54,7 @@ class ModelManager:
         return statuses
 
     def needs_download(self) -> bool:
-        return any(not s.exists for s in self.status())
+        return any(not s.exists for s in self.status() if s.id.lower() not in self.optional_models)
 
     def download(self, models: Optional[Iterable[str]] = None) -> List[ModelStatus]:
         with self._lock:
@@ -55,9 +62,12 @@ class ModelManager:
                 return self.status()
             self._downloading = True
         try:
-            repo_ids = DEFAULT_MODELS
             if models:
                 repo_ids = {m: DEFAULT_MODELS.get(m, m) for m in models}
+            else:
+                repo_ids = {
+                    key: repo_id for key, repo_id in DEFAULT_MODELS.items() if key not in self.optional_models
+                }
             for repo_id in repo_ids.values():
                 target = self.models_dir / repo_id.replace("/", "_")
                 snapshot_download(

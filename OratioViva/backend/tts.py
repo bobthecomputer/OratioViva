@@ -5,6 +5,7 @@ import math
 import struct
 import uuid
 import wave
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,28 +29,12 @@ class VoicePreset:
     description: Optional[str] = None
 
 
-VOICE_PRESETS = [
-    VoicePreset(
-        id="kokoro_en_us_0",
-        model="hexgrad/Kokoro-82M",
-        language="en",
-        label="Kokoro US Neutral",
-        description="Rapide, clair, anglais US",
-    ),
-    VoicePreset(
-        id="kokoro_en_gb_0",
-        model="hexgrad/Kokoro-82M",
-        language="en",
-        label="Kokoro UK Bright",
-        description="Anglais UK, ton clair",
-    ),
-    VoicePreset(
-        id="kokoro_fr_0",
-        model="hexgrad/Kokoro-82M",
-        language="fr",
-        label="Kokoro Francais Clair",
-        description="Francais, neutralite",
-    ),
+OPTIONAL_MODELS = {
+    m.strip().lower() for m in os.getenv("ORATIO_OPTIONAL_MODELS", "kokoro").split(",") if m.strip()
+}
+SKIP_KOKORO = "kokoro" in OPTIONAL_MODELS
+
+ALL_VOICE_PRESETS = [
     VoicePreset(
         id="parler_en_neutral",
         model="parler-tts/parler-tts-mini-v1.1",
@@ -78,8 +63,32 @@ VOICE_PRESETS = [
         label="MMS EN Warm",
         description="Meta MMS TTS (CPU/<=8GB VRAM), voix naturelle style lecture.",
     ),
+    VoicePreset(
+        id="kokoro_en_us_0",
+        model="hexgrad/Kokoro-82M",
+        language="en",
+        label="Kokoro US Neutral",
+        description="Rapide, clair, anglais US",
+    ),
+    VoicePreset(
+        id="kokoro_en_gb_0",
+        model="hexgrad/Kokoro-82M",
+        language="en",
+        label="Kokoro UK Bright",
+        description="Anglais UK, ton clair",
+    ),
+    VoicePreset(
+        id="kokoro_fr_0",
+        model="hexgrad/Kokoro-82M",
+        language="fr",
+        label="Kokoro Francais Clair",
+        description="Francais, neutralite",
+    ),
 ]
 
+VOICE_PRESETS = [
+    voice for voice in ALL_VOICE_PRESETS if not (SKIP_KOKORO and "kokoro" in voice.model.lower())
+]
 VOICE_BY_ID: Dict[str, VoicePreset] = {voice.id: voice for voice in VOICE_PRESETS}
 
 
@@ -254,13 +263,24 @@ class TTSService:
     def _has_local_models(self, model_id: Optional[str] = None) -> bool:
         if model_id and not self._supports_local_model(model_id):
             return False
-        if self.model_manager is not None:
-            for status in self.model_manager.status():
-                if status.exists and self._supports_local_model(status.repo_id):
-                    return True
-            return False
+
+        statuses = self.model_manager.status() if self.model_manager is not None else None
+        if statuses is not None:
+            if model_id:
+                for status in statuses:
+                    if (
+                        status.exists
+                        and status.repo_id == model_id
+                        and self._supports_local_model(status.repo_id)
+                    ):
+                        return True
+                return False
+            return any(status.exists and self._supports_local_model(status.repo_id) for status in statuses)
+
         if not self.models_dir:
             return False
+        if model_id:
+            return (self.models_dir / model_id.replace("/", "_")).exists()
         return any(self.models_dir.glob("*"))
 
     def local_support(self, model_id: str) -> Tuple[bool, Optional[str]]:
@@ -326,13 +346,16 @@ class TTSService:
         created_at: datetime,
     ) -> AudioResult:
         client = self._get_client(voice.model)
+        lower_model = voice.model.lower()
         kwargs = {}
         if voice.voice:
             kwargs["voice"] = voice.voice
         if style:
             kwargs["style"] = style
-
-        audio_bytes = client.text_to_speech(text, model=voice.model, **kwargs)
+        if "bark" in lower_model:
+            audio_bytes = client.text_to_audio(text, model=voice.model)
+        else:
+            audio_bytes = client.text_to_speech(text, model=voice.model, **kwargs)
         duration = self._write_wav_bytes(audio_bytes, destination, speed=speed)
         return AudioResult(
             job_id=job_id,
