@@ -44,6 +44,8 @@ def ensure_data_dir() -> Path:
 DATA_DIR = ensure_data_dir()
 os.environ.setdefault("ORATIO_TTS_PROVIDER", "local")
 
+os.environ["ORATIO_MODELS_DIR"] = str(DATA_DIR / "models")
+
 # Import the FastAPI app only after ORATIO_DATA_DIR is set.
 from backend.main import app  # noqa: E402
 

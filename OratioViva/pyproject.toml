@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oratioviva"
+version = "1.0.0"
+description = "Application texte-vers-voix locale avec modèles Parler, Bark, SpeechT5, MMS"
+requires-python = ">=3.11,<3.14"
+license = {text = "MIT"}
+authors = [
+    {name = "OratioViva", email = "dev@oratioviva.local"}
+]
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.10.0",
+    "huggingface_hub>=0.20.0",
+    "httpx>=0.26.0",
+    "pywebview>=4.4.0",
+]
+
+[project.optional-dependencies]
+tts = [
+    "torch>=2.5.0",
+    "torchaudio>=2.5.0",
+    "transformers>=4.46.0",
+    "numpy>=2.0.0",
+    "parler-tts>=0.2.0",
+    "fsspec>=2025.0.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pyinstaller>=6.0.0",
+]
+
+[project.scripts]
+oratioviva = "backend.desktop_app:main"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.uv]
+package = true
+
+[tool.pyinstaller.binaries]
+applocalsplitdate = false
+
+[tool.pyinstaller]
+onefile = true
+console = false
+
+[tool.pyinstaller.options]
+"pywebview" = ["--hidden-import=pywebview.libs.webview_edgehtml", "--hidden-import=webview"]

@@ -126,6 +126,12 @@ class AudioResult:
     source: str  # "inference" or "stub"
 
 
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm"}
+
+def _is_audio_file(path: Path) -> bool:
+    return path.suffix.lower() in AUDIO_EXTENSIONS
+
+
 class TTSService:
     def __init__(
         self,
@@ -184,6 +190,8 @@ class TTSService:
         path = Path(trimmed).expanduser()
         if not path.exists() or not path.is_file():
             raise RuntimeError(f"voice_ref introuvable: {voice_ref}")
+        if not _is_audio_file(path):
+            raise RuntimeError(f"voice_ref doit etre un fichier audio (.wav, .mp3, .ogg, etc.), pas un fichier {path.suffix}")
         return path
 
     def _get_local_pipeline(self, model_key: str, task: str = "text-to-speech") -> object:
