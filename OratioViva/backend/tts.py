@@ -33,6 +33,7 @@ OPTIONAL_MODELS = {
     m.strip().lower() for m in os.getenv("ORATIO_OPTIONAL_MODELS", "kokoro").split(",") if m.strip()
 }
 SKIP_KOKORO = "kokoro" in OPTIONAL_MODELS
+VOICE_REF_MODELS = ("xtts", "f5-tts", "cosyvoice")
 
 ALL_VOICE_PRESETS = [
     VoicePreset(
@@ -62,6 +63,27 @@ ALL_VOICE_PRESETS = [
         language="en",
         label="MMS EN Warm",
         description="Meta MMS TTS (CPU/<=8GB VRAM), voix naturelle style lecture.",
+    ),
+    VoicePreset(
+        id="xtts_v2_multi",
+        model="coqui/XTTS-v2",
+        language="multi",
+        label="XTTS v2 Clone",
+        description="Voice cloning (voice_ref requis).",
+    ),
+    VoicePreset(
+        id="f5_tts_multi",
+        model="SWivid/F5-TTS",
+        language="multi",
+        label="F5-TTS Clone",
+        description="Voice cloning moderne (voice_ref requis).",
+    ),
+    VoicePreset(
+        id="cosyvoice3_multi",
+        model="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+        language="multi",
+        label="CosyVoice3 Multi",
+        description="Voix expressive (voice_ref requis).",
     ),
     VoicePreset(
         id="kokoro_en_us_0",
@@ -127,10 +149,131 @@ class TTSService:
         self._clients: Dict[str, InferenceClient] = {}
         self._local_pipelines: Dict[str, object] = {}
         self._parler_models: Dict[str, Tuple[Any, Any]] = {}
+        self._speaker_encoder: Optional[object] = None
+        self._speaker_embeddings: Dict[str, Any] = {}
         self.audio_dir.mkdir(parents=True, exist_ok=True)
 
     def list_voices(self):
         return [voice.__dict__ for voice in VOICE_PRESETS]
+
+    def _supports_voice_ref(self, model_id: str) -> bool:
+        lower_id = model_id.lower()
+        return any(token in lower_id for token in VOICE_REF_MODELS)
+
+    def _resolve_voice_ref(self, voice_ref: Optional[str]) -> Optional[object]:
+        if not voice_ref:
+            return None
+        trimmed = voice_ref.strip()
+        if not trimmed:
+            return None
+        if trimmed.lower().startswith(("http://", "https://")):
+            return trimmed
+        candidate = Path(trimmed).expanduser()
+        if candidate.exists() and candidate.is_file():
+            return candidate.read_bytes()
+        return trimmed
+
+    def _resolve_local_voice_ref_path(self, voice_ref: Optional[str], *, required: bool = False) -> Optional[Path]:
+        if not voice_ref or not voice_ref.strip():
+            if required:
+                raise RuntimeError("Ce modele local requiert un fichier voice_ref.")
+            return None
+        trimmed = voice_ref.strip()
+        if trimmed.lower().startswith(("http://", "https://")):
+            raise RuntimeError("voice_ref local doit etre un chemin vers un fichier audio.")
+        path = Path(trimmed).expanduser()
+        if not path.exists() or not path.is_file():
+            raise RuntimeError(f"voice_ref introuvable: {voice_ref}")
+        return path
+
+    def _get_local_pipeline(self, model_key: str, task: str = "text-to-speech") -> object:
+        try:
+            from transformers import pipeline
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("Local pipeline requires transformers installed") from exc
+
+        if model_key not in self._local_pipelines:
+            self._local_pipelines[model_key] = pipeline(
+                task=task,
+                model=model_key,
+                device="cpu",
+                trust_remote_code=True,
+            )
+        return self._local_pipelines[model_key]
+
+    def _run_tts_pipeline(
+        self,
+        tts: object,
+        text: str,
+        *,
+        speed: float,
+        voice_ref_path: Optional[Path] = None,
+        prompt_text: Optional[str] = None,
+    ):
+        forward_params = {"speed": speed} if speed != 1.0 else {}
+        voice_candidates = []
+        if voice_ref_path is not None:
+            voice_path = str(voice_ref_path)
+            voice_candidates = [
+                {"speaker_wav": voice_path},
+                {"prompt_wav": voice_path},
+                {"ref_audio": voice_path},
+                {"reference_audio": voice_path},
+                {"voice": voice_path},
+                {"audio_prompt": voice_path},
+            ]
+        prompt_candidates = []
+        if prompt_text:
+            prompt_candidates = [
+                {"prompt_text": prompt_text},
+                {"ref_text": prompt_text},
+                {"reference_text": prompt_text},
+                {"style": prompt_text},
+            ]
+        if not voice_candidates and not prompt_candidates:
+            voice_candidates = [{}]
+            prompt_candidates = [{}]
+        elif not voice_candidates:
+            voice_candidates = [{}]
+        elif not prompt_candidates:
+            prompt_candidates = [{}]
+
+        last_error = None
+        for voice_kwargs in voice_candidates:
+            for prompt_kwargs in prompt_candidates:
+                kwargs = {**voice_kwargs, **prompt_kwargs}
+                try:
+                    if forward_params:
+                        return tts(text, forward_params=forward_params, **kwargs)
+                    return tts(text, **kwargs)
+                except TypeError as exc:
+                    last_error = exc
+                    continue
+
+        if voice_ref_path is not None or prompt_text:
+            if forward_params:
+                for voice_kwargs in voice_candidates:
+                    for prompt_kwargs in prompt_candidates:
+                        merged = {**voice_kwargs, **prompt_kwargs}
+                        try:
+                            return tts(text, forward_params={**forward_params, **merged})
+                        except TypeError as exc:
+                            last_error = exc
+                            continue
+
+        if forward_params:
+            try:
+                return tts(text, forward_params=forward_params)
+            except TypeError as exc:
+                last_error = exc
+
+        if voice_ref_path is not None or prompt_text:
+            raise RuntimeError(
+                "Le modele local n'accepte pas voice_ref/prompt; verifiez les dependances."
+            ) from last_error
+        if last_error is not None:
+            raise last_error
+        return tts(text)
 
     def synthesize(
         self,
@@ -139,6 +282,7 @@ class TTSService:
         voice_id: str,
         speed: float = 1.0,
         style: Optional[str] = None,
+        voice_ref: Optional[str] = None,
         job_id: Optional[str] = None,
         provider: Optional[str] = None,
     ) -> AudioResult:
@@ -166,6 +310,25 @@ class TTSService:
                 source="stub",
             )
 
+        if resolved_provider == "local":
+            supported, reason = self._local_support(voice.model)
+            if not supported:
+                raise RuntimeError(reason or "Modele local indisponible.")
+            if not self._has_local_models(voice.model):
+                raise RuntimeError(
+                    "Modele local manquant. Telechargez-le via l'onglet Modeles."
+                )
+
+        voice_ref_payload = None
+        if self._supports_voice_ref(voice.model):
+            if resolved_provider == "inference":
+                voice_ref_payload = self._resolve_voice_ref(voice_ref)
+                if voice_ref_payload is None:
+                    raise ValueError("Ce modele requiert une reference de voix (voice_ref).")
+            else:
+                if not voice_ref or not voice_ref.strip():
+                    raise ValueError("Ce modele requiert une reference de voix (voice_ref).")
+
         try:
             if resolved_provider == "local":
                 return self._synthesize_local(
@@ -175,12 +338,14 @@ class TTSService:
                     destination=destination,
                     speed=speed,
                     style=style,
+                    voice_ref=voice_ref,
                     created_at=created_at,
                 )
             if resolved_provider == "inference":
                 return self._synthesize_inference(
                     text=text,
                     voice=voice,
+                    voice_ref=voice_ref_payload,
                     job_id=job_id,
                     destination=destination,
                     speed=speed,
@@ -220,6 +385,10 @@ class TTSService:
 
     def _resolve_model_path(self, model_name: str) -> str:
         model_path = model_name
+        if self.model_manager is not None:
+            resolved = self.model_manager.resolve_model_path(model_name)
+            if resolved is not None:
+                return str(resolved)
         if self.models_dir:
             candidate = self.models_dir / model_name.replace("/", "_")
             if candidate.exists():
@@ -234,11 +403,56 @@ class TTSService:
             except Exception:
                 return False, "Parler local requiert le package parler-tts."
             return True, None
+        if "bark" in lower_id:
+            try:
+                import transformers  # type: ignore  # noqa: F401
+            except Exception:
+                return False, "Bark local requiert transformers installe."
+            return True, None
+        if "speecht5" in lower_id:
+            try:
+                import torch  # type: ignore  # noqa: F401
+                from transformers import (  # type: ignore  # noqa: F401
+                    SpeechT5ForTextToSpeech,
+                    SpeechT5HifiGan,
+                    SpeechT5Processor,
+                )
+            except Exception:
+                return False, "SpeechT5 local requiert torch + transformers installes."
+            return True, None
+        if "mms-tts" in lower_id or "mms_tts" in lower_id:
+            try:
+                import torch  # type: ignore  # noqa: F401
+                from transformers import AutoProcessor, VitsModel  # type: ignore  # noqa: F401
+            except Exception:
+                return False, "MMS local requiert torch + transformers installes."
+            return True, None
         if "kokoro" in lower_id:
             try:
                 import kokoro  # type: ignore  # noqa: F401
             except Exception:
                 return False, "Kokoro local indisponible (package kokoro non supporte en Python 3.13); utilisez HF_TOKEN pour l'inference ou restez en stub."
+            return True, None
+        if "xtts" in lower_id:
+            try:
+                from TTS.api import TTS  # type: ignore  # noqa: F401
+            except Exception:
+                try:
+                    import transformers  # type: ignore  # noqa: F401
+                except Exception:
+                    return False, "XTTS local requiert TTS ou transformers installes."
+            return True, None
+        if "f5-tts" in lower_id or "f5_tts" in lower_id:
+            try:
+                import transformers  # type: ignore  # noqa: F401
+            except Exception:
+                return False, "F5-TTS local requiert transformers installe."
+            return True, None
+        if "cosyvoice" in lower_id:
+            try:
+                import transformers  # type: ignore  # noqa: F401
+            except Exception:
+                return False, "CosyVoice local requiert transformers installe."
             return True, None
         return True, None
 
@@ -274,6 +488,11 @@ class TTSService:
                         and self._supports_local_model(status.repo_id)
                     ):
                         return True
+                if (
+                    self.model_manager.resolve_model_path(model_id) is not None
+                    and self._supports_local_model(model_id)
+                ):
+                    return True
                 return False
             return any(status.exists and self._supports_local_model(status.repo_id) for status in statuses)
 
@@ -295,6 +514,8 @@ class TTSService:
                 supported, reason = self._local_support(getattr(status, "repo_id", ""))
                 if not supported and reason:
                     return reason
+            if self.model_manager is not None and self.model_manager.needs_download():
+                return "Modeles locaux manquants. Telechargez-les pour activer le mode local."
         if resolved == "stub" and not self.hf_token:
             return "Aucun token HF fourni; utilisation du mode stub."
         return None
@@ -339,6 +560,7 @@ class TTSService:
         *,
         text: str,
         voice: VoicePreset,
+        voice_ref: Optional[object],
         job_id: str,
         destination: Path,
         speed: float,
@@ -348,7 +570,9 @@ class TTSService:
         client = self._get_client(voice.model)
         lower_model = voice.model.lower()
         kwargs = {}
-        if voice.voice:
+        if voice_ref is not None:
+            kwargs["voice"] = voice_ref
+        elif voice.voice:
             kwargs["voice"] = voice.voice
         if style:
             kwargs["style"] = style
@@ -377,6 +601,7 @@ class TTSService:
         destination: Path,
         speed: float,
         style: Optional[str],
+        voice_ref: Optional[str],
         created_at: datetime,
     ) -> AudioResult:
         model_path = self._resolve_model_path(voice.model)
@@ -413,6 +638,43 @@ class TTSService:
                 destination=destination,
                 speed=speed,
                 style=style,
+                voice_ref=voice_ref,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "xtts" in lower_model:
+            return self._synthesize_xtts_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                voice_ref=voice_ref,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "f5-tts" in lower_model or "f5_tts" in lower_model:
+            return self._synthesize_voice_clone_pipeline_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                voice_ref=voice_ref,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        if "cosyvoice" in lower_model:
+            return self._synthesize_voice_clone_pipeline_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                voice_ref=voice_ref,
                 created_at=created_at,
                 model_path=model_path,
             )
@@ -433,21 +695,8 @@ class TTSService:
                 "install it or use ORATIO_TTS_PROVIDER=inference/stub."
             )
 
-        try:
-            from transformers import pipeline
-            import numpy as np
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError("Local pipeline requires transformers and numpy installed") from exc
-
-        if model_key not in self._local_pipelines:
-            self._local_pipelines[model_key] = pipeline(
-                task="text-to-speech",
-                model=model_key,
-                device="cpu",
-                trust_remote_code=True,
-            )
-        tts = self._local_pipelines[model_key]
-        outputs = tts(text, forward_params={"speed": speed})
+        tts = self._get_local_pipeline(model_key, task="text-to-speech")
+        outputs = self._run_tts_pipeline(tts, text, speed=speed)
         audio = outputs["audio"] if isinstance(outputs, dict) else outputs
         sampling_rate = outputs.get("sampling_rate", 24000) if isinstance(outputs, dict) else 24000
 
@@ -550,6 +799,167 @@ class TTSService:
             source="local",
         )
 
+    def _synthesize_xtts_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        voice_ref: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        voice_ref_path = self._resolve_local_voice_ref_path(voice_ref, required=True)
+        xtts_error: Optional[Exception] = None
+        try:
+            from TTS.api import TTS
+
+            model_key = f"xtts::{model_path}"
+            if model_key not in self._local_pipelines:
+                model_dir = Path(model_path)
+                tts_model = None
+                if model_dir.exists() and model_dir.is_dir():
+                    config_path = model_dir / "config.json"
+                    checkpoint = model_dir / "model.pth"
+                    if not checkpoint.exists():
+                        candidates = [
+                            p
+                            for p in model_dir.glob("*.pth")
+                            if "speaker" not in p.name.lower()
+                        ]
+                        if candidates:
+                            checkpoint = candidates[0]
+                    if config_path.exists() and checkpoint.exists():
+                        tts_model = TTS(
+                            model_path=str(checkpoint),
+                            config_path=str(config_path),
+                            progress_bar=False,
+                            gpu=False,
+                        )
+                    else:
+                        tts_model = TTS(model_path=str(model_dir), progress_bar=False, gpu=False)
+                else:
+                    tts_model = TTS(model_name=voice.model, progress_bar=False, gpu=False)
+                self._local_pipelines[model_key] = tts_model
+
+            tts_model = self._local_pipelines[model_key]
+            language = voice.language if voice.language != "multi" else os.getenv("ORATIO_TTS_LANGUAGE", "en")
+            audio = tts_model.tts(
+                text=text,
+                speaker_wav=str(voice_ref_path),
+                language=language,
+            )
+            sample_rate = getattr(getattr(tts_model, "synthesizer", None), "output_sample_rate", 24000)
+            duration = self._write_array_to_wav(audio, sample_rate, destination)
+            return AudioResult(
+                job_id=job_id,
+                audio_path=destination,
+                audio_url=f"{self.base_audio_url}/{destination.name}",
+                duration_seconds=duration,
+                created_at=created_at,
+                model=voice.model,
+                voice_id=voice.id,
+                source="local",
+            )
+        except Exception as exc:  # noqa: BLE001
+            xtts_error = exc
+
+        try:
+            return self._synthesize_voice_clone_pipeline_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                voice_ref=voice_ref,
+                created_at=created_at,
+                model_path=model_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"XTTS local a echoue (TTS puis pipeline): {xtts_error}"
+            ) from exc
+
+    def _synthesize_voice_clone_pipeline_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        voice_ref: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        voice_ref_path = self._resolve_local_voice_ref_path(voice_ref, required=True)
+        tts = self._get_local_pipeline(model_path, task="text-to-speech")
+        outputs = self._run_tts_pipeline(
+            tts,
+            text,
+            speed=speed,
+            voice_ref_path=voice_ref_path,
+            prompt_text=style,
+        )
+        audio = outputs["audio"] if isinstance(outputs, dict) else outputs
+        sampling_rate = outputs.get("sampling_rate", 24000) if isinstance(outputs, dict) else 24000
+        duration = self._write_array_to_wav(audio, sampling_rate, destination)
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
+    def _resolve_speecht5_embedding(self, voice_ref: str):
+        try:
+            import torch
+            import torchaudio
+            from torchaudio.pipelines import SUPERB_XVECTOR
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError("SpeechT5 voice_ref requiert torchaudio installe.") from exc
+
+        path = Path(voice_ref).expanduser()
+        if not path.exists():
+            raise RuntimeError(f"voice_ref introuvable: {voice_ref}")
+        cache_key = str(path.resolve())
+        cached = self._speaker_embeddings.get(cache_key)
+        if cached is not None:
+            return cached
+
+        waveform, sample_rate = torchaudio.load(str(path))
+        if waveform.ndim > 1 and waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        target_rate = SUPERB_XVECTOR.sample_rate
+        if sample_rate != target_rate:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, target_rate)
+
+        if self._speaker_encoder is None:
+            self._speaker_encoder = SUPERB_XVECTOR.get_model()
+            self._speaker_encoder.eval()
+
+        with torch.inference_mode():
+            embedding = self._speaker_encoder(waveform)
+        if isinstance(embedding, tuple):
+            embedding = embedding[0]
+        if embedding.ndim == 1:
+            embedding = embedding.unsqueeze(0)
+        elif embedding.ndim > 2:
+            embedding = embedding.squeeze()
+            if embedding.ndim == 1:
+                embedding = embedding.unsqueeze(0)
+        self._speaker_embeddings[cache_key] = embedding
+        return embedding
+
     def _synthesize_speecht5_local(
         self,
         *,
@@ -559,6 +969,7 @@ class TTSService:
         destination: Path,
         speed: float,
         style: Optional[str],
+        voice_ref: Optional[str],
         created_at: datetime,
         model_path: str,
     ) -> AudioResult:
@@ -577,7 +988,12 @@ class TTSService:
         processor, model, vocoder = self._local_pipelines[model_path]
 
         inputs = processor(text=text, return_tensors="pt")
-        speaker_embeddings = torch.zeros((1, 512))  # neutral speaker embedding
+        if voice_ref:
+            voice_ref_path = self._resolve_local_voice_ref_path(voice_ref, required=True)
+            speaker_embeddings = self._resolve_speecht5_embedding(str(voice_ref_path))
+        else:
+            speaker_embeddings = torch.zeros((1, 512))  # neutral speaker embedding
+        speaker_embeddings = speaker_embeddings.to(model.device)
 
         with torch.inference_mode():
             speech = model.generate_speech(

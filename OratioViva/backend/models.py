@@ -16,6 +16,12 @@ DEFAULT_MODELS: Dict[str, str] = {
     "speecht5_vocoder": "microsoft/speecht5_hifigan",
     "mms": "facebook/mms-tts-eng",
 }
+EXTRA_MODELS: Dict[str, str] = {
+    "xtts": "coqui/XTTS-v2",
+    "f5_tts": "SWivid/F5-TTS",
+    "cosyvoice3": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+}
+MODEL_ALIASES: Dict[str, str] = {**DEFAULT_MODELS, **EXTRA_MODELS}
 
 
 @dataclass
@@ -33,12 +39,14 @@ class ModelManager:
         models_dir: Optional[Path],
         token: Optional[str],
         optional_models: Optional[Iterable[str]] = None,
+        extra_dirs: Optional[Iterable[Path]] = None,
     ) -> None:
         self.base_dir = base_dir
         self.models_dir = models_dir or (base_dir / "models")
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.token = token
         self.optional_models: Set[str] = {m.lower() for m in (optional_models or [])}
+        self.extra_dirs = [Path(p) for p in (extra_dirs or []) if p]
         self._lock = threading.Lock()
         self._downloading = False
 
@@ -46,11 +54,23 @@ class ModelManager:
     def downloading(self) -> bool:
         return self._downloading
 
+    def _candidate_roots(self) -> List[Path]:
+        return [self.models_dir, *self.extra_dirs]
+
+    def resolve_model_path(self, repo_id: str) -> Optional[Path]:
+        name = repo_id.replace("/", "_")
+        for root in self._candidate_roots():
+            candidate = root / name
+            if candidate.exists():
+                return candidate
+        return None
+
     def status(self) -> List[ModelStatus]:
         statuses: List[ModelStatus] = []
         for key, repo_id in DEFAULT_MODELS.items():
-            dest = self.models_dir / repo_id.replace("/", "_")
-            statuses.append(ModelStatus(id=key, repo_id=repo_id, path=dest, exists=dest.exists()))
+            resolved = self.resolve_model_path(repo_id)
+            dest = resolved or (self.models_dir / repo_id.replace("/", "_"))
+            statuses.append(ModelStatus(id=key, repo_id=repo_id, path=dest, exists=resolved is not None))
         return statuses
 
     def needs_download(self) -> bool:
@@ -63,12 +83,14 @@ class ModelManager:
             self._downloading = True
         try:
             if models:
-                repo_ids = {m: DEFAULT_MODELS.get(m, m) for m in models}
+                repo_ids = {m: MODEL_ALIASES.get(m, m) for m in models}
             else:
                 repo_ids = {
                     key: repo_id for key, repo_id in DEFAULT_MODELS.items() if key not in self.optional_models
                 }
             for repo_id in repo_ids.values():
+                if self.resolve_model_path(repo_id) is not None:
+                    continue
                 target = self.models_dir / repo_id.replace("/", "_")
                 snapshot_download(
                     repo_id=repo_id,

@@ -53,19 +53,21 @@ JOBS_PATH = OUTPUT_DIR / "jobs.json"
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 USE_STUB = os.getenv("ORATIO_TTS_STUB", "0") == "1"
 MAX_JOBS = int(os.getenv("ORATIO_JOBS_MAX", "300"))
-TTS_PROVIDER = os.getenv("ORATIO_TTS_PROVIDER", "auto")  # auto | inference | local | stub
+TTS_PROVIDER = os.getenv("ORATIO_TTS_PROVIDER", "local")  # auto | inference | local | stub
 MODELS_DIR_ENV = os.getenv("ORATIO_MODELS_DIR")
 OPTIONAL_MODELS = {
     m.strip().lower()
     for m in os.getenv("ORATIO_OPTIONAL_MODELS", "kokoro").split(",")
     if m.strip()
 }
-if MODELS_DIR_ENV:
-    MODELS_DIR = Path(MODELS_DIR_ENV).expanduser().resolve()
-elif getattr(sys, "frozen", False):
+BUNDLED_MODELS_DIR = None
+if getattr(sys, "frozen", False):
     bundle_root = Path(getattr(sys, "_MEIPASS", Path.cwd()))
     candidate = bundle_root / "models"
-    MODELS_DIR = candidate if candidate.exists() else None
+    if candidate.exists():
+        BUNDLED_MODELS_DIR = candidate
+if MODELS_DIR_ENV:
+    MODELS_DIR = Path(MODELS_DIR_ENV).expanduser().resolve()
 else:
     MODELS_DIR = BASE_DIR / "models"
 FRONTEND_DIST = resolve_frontend_dist(BASE_DIR)
@@ -77,6 +79,9 @@ class SynthesisRequest(BaseModel):
     speed: float = Field(1.0, ge=0.5, le=2.0)
     style: Optional[str] = Field(
         None, description="Optional style/prompt (used for Parler or other style-aware models)."
+    )
+    voice_ref: Optional[str] = Field(
+        None, description="Optional voice reference (path or URL) for voice cloning models."
     )
 
 
@@ -182,6 +187,7 @@ model_manager = ModelManager(
     models_dir=MODELS_DIR,
     token=HF_TOKEN,
     optional_models=OPTIONAL_MODELS,
+    extra_dirs=[BUNDLED_MODELS_DIR] if BUNDLED_MODELS_DIR else None,
 )
 tts_service = TTSService(
     audio_dir=AUDIO_DIR,
@@ -298,7 +304,14 @@ def _record_history(result, text: str) -> None:
     append_history(entry)
 
 
-def _run_job(job_id: str, text: str, voice_id: str, speed: float, style: Optional[str]) -> JobStatus:
+def _run_job(
+    job_id: str,
+    text: str,
+    voice_id: str,
+    speed: float,
+    style: Optional[str],
+    voice_ref: Optional[str],
+) -> JobStatus:
     job_store.update(job_id, status="running")
     try:
         result = tts_service.synthesize(
@@ -306,6 +319,7 @@ def _run_job(job_id: str, text: str, voice_id: str, speed: float, style: Optiona
             voice_id=voice_id,
             speed=speed,
             style=style,
+            voice_ref=voice_ref,
             job_id=job_id,
         )
         _record_history(result, text)
@@ -339,12 +353,13 @@ def synthesize(request: SynthesisRequest, background_tasks: BackgroundTasks, asy
             request.voice_id,
             request.speed,
             request.style,
+            request.voice_ref,
         )
         job = job_store.get(job_id)
         assert job is not None
         return JobStatusResponse(**job.__dict__)
 
-    job = _run_job(job_id, text, request.voice_id, request.speed, request.style)
+    job = _run_job(job_id, text, request.voice_id, request.speed, request.style, request.voice_ref)
     return JobStatusResponse(**job.__dict__)
 
 

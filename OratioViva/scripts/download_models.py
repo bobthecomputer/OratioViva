@@ -25,12 +25,18 @@ DEFAULT_MODELS = {
     "speecht5_vocoder": "microsoft/speecht5_hifigan",
     "mms": "facebook/mms-tts-eng",
 }
+EXTRA_MODELS = {
+    "xtts": "coqui/XTTS-v2",
+    "f5_tts": "SWivid/F5-TTS",
+    "cosyvoice3": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+}
+MODEL_ALIASES = {**DEFAULT_MODELS, **EXTRA_MODELS}
 
 
 def resolve_repo_ids(models: Iterable[str]) -> List[str]:
     repo_ids: List[str] = []
     for name in models:
-        repo_ids.append(DEFAULT_MODELS.get(name, name))
+        repo_ids.append(MODEL_ALIASES.get(name, name))
     return repo_ids
 
 
@@ -45,7 +51,7 @@ def main() -> None:
         "--models",
         nargs="+",
         default=list(DEFAULT_MODELS.keys()),
-        help="Liste de modeles (alias kokoro/parler/bark/speecht5/mms ou repo_id HF).",
+        help="Liste de modeles (alias kokoro/parler/bark/speecht5/mms/xtts/f5_tts/cosyvoice3 ou repo_id HF).",
     )
     parser.add_argument(
         "--token",

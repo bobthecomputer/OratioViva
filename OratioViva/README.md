@@ -11,7 +11,7 @@ Studio texte-vers-voix local (Parler, Bark, SpeechT5, MMS) avec Kokoro via HF In
 cd OratioViva
 .\scripts\make_app.ps1 -AppName OratioViva -Windowed
 ```
-Options utiles : `-SkipModels` pour ne pas embarquer les modeles, `-OneDir` si PyInstaller onefile depasse 4GB.
+Options utiles : `-SkipModels` pour ne pas embarquer les modeles, `-OneDir` si PyInstaller onefile depasse 4GB, `-Python311` pour forcer Python 3.11 (ajouter `-RecreateVenv` si `.venv` existe deja).
 
 Ce script :
 - cree `.venv`, installe les deps backend
@@ -28,6 +28,7 @@ Ce script :
 
 ## Controles dans l'UI
 - Voix Parler/Bark/SpeechT5/MMS/Kokoro, vitesse, style (prompt Parler).
+- Reference voix (voice_ref) pour SpeechT5/XTTS/F5/CosyVoice si vous faites du clonage (fichier audio local recommande).
 - Historique, lecture, telechargement, export ZIP, suppression et gestion des jobs.
 - Onglet Analytics (provider local/inference/stub, modeles presents, metriques audio, derniers jobs).
 - Badge d'etat modeles/provider + avertissement si mode stub.
@@ -40,6 +41,7 @@ Ce script :
 - Tests frontend : `cd frontend && npm test && npm run build`
 
 ## Points techniques
-- Provider auto : si modeles locaux presents -> local; sinon token HF -> inference; sinon stub (bip).
+- Provider par defaut : local (changer via `ORATIO_TTS_PROVIDER`). `auto` choisit local si present, sinon inference (token HF), sinon stub (bip).
 - Modeles bundles via `scripts\make_app.ps1` (utilise `scripts\download_models.py`).
 - Outputs : `data\outputs\audio` + `history.json` (ignores par git).
+- Modeles optionnels: XTTS v2, F5-TTS, CosyVoice3 (voice_ref pour clonage, local possible avec deps).

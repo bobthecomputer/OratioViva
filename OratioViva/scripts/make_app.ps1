@@ -7,7 +7,11 @@ Param(
     [string]$IconPath = "assets/app.ico",
     [string]$Entrypoint = "backend\desktop_app.py",
     [switch]$Windowed = $true,
-    [switch]$OneDir = $false
+    [switch]$OneDir = $false,
+    [string]$PythonExe = "python",
+    [string[]]$PythonArgs = @(),
+    [switch]$Python311 = $false,
+    [switch]$RecreateVenv = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,11 +24,29 @@ Write-Host "Fenetre uniquement. Le binaire lance backend + frontend automatiquem
 
 # Backend: venv + deps + pyinstaller
 Push-Location "backend"
+$venvPath = ".venv"
+$python = ".\.venv\Scripts\python.exe"
+if ($Python311) {
+    $PythonExe = "py"
+    $PythonArgs = @("-3.11")
+}
 if (-not (Test-Path ".venv")) {
     Write-Host "Creating virtualenv..." -ForegroundColor Green
-    python -m venv .venv
+    & $PythonExe @PythonArgs -m venv $venvPath
+} else {
+    if ($Python311 -and (Test-Path $python)) {
+        $venvVersion = & $python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if ($venvVersion -ne "3.11") {
+            if ($RecreateVenv) {
+                Write-Host "Recreating virtualenv for Python 3.11..." -ForegroundColor Yellow
+                Remove-Item -Recurse -Force $venvPath
+                & $PythonExe @PythonArgs -m venv $venvPath
+            } else {
+                throw "Existing .venv uses Python $venvVersion. Rerun with -RecreateVenv or delete .venv."
+            }
+        }
+    }
 }
-$python = ".\.venv\Scripts\python.exe"
 & $python -m pip install --upgrade pip
 & $python -m pip install -r requirements.txt
 if (-not $SkipModels) {

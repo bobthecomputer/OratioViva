@@ -26,6 +26,7 @@ export default function App() {
   const [voiceId, setVoiceId] = useState("");
   const [speed, setSpeed] = useState(1);
   const [style, setStyle] = useState("");
+  const [voiceRef, setVoiceRef] = useState("");
   const [history, setHistory] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [status, setStatus] = useState("");
@@ -194,7 +195,7 @@ export default function App() {
     setStatus("Synthese en cours...");
     try {
       const job = await createSynthesis(
-        { text, voice_id: voiceId, speed, style: style || undefined },
+        { text, voice_id: voiceId, speed, style: style || undefined, voice_ref: voiceRef || undefined },
         { asyncMode: true },
       );
       await pollJob(job.job_id);
@@ -314,7 +315,7 @@ export default function App() {
             <p className="eyebrow">Preparation</p>
             <h2>Installer les modeles TTS</h2>
             <p className="lede">
-              Premier lancement: telechargez Kokoro/Parler pour entendre une vraie voix (sinon bip de test).
+              Premier lancement: telechargez Parler/Bark/SpeechT5/MMS pour entendre une vraie voix (sinon bip de test).
             </p>
             <p className="lede">
               Cela prend 1 a 3 minutes selon la connexion. Laissez la fenetre ouverte.
@@ -377,10 +378,10 @@ export default function App() {
             <p className="lede warning">{modelState.providerMessage}</p>
           )}
         </div>
-        <div className="logo-wrap">
-          <img src="/logo.png" alt="OratioViva logo" className="logo" />
-          <div className="pill">TTS Kokoro / Parler</div>
-        </div>
+          <div className="logo-wrap">
+            <img src="/logo.png" alt="OratioViva logo" className="logo" />
+            <div className="pill">TTS Parler / Bark / SpeechT5</div>
+          </div>
       </header>
 
       <main className="grid">
@@ -416,12 +417,22 @@ export default function App() {
             </div>
 
             <div className="field">
-              <label className="label">Style (Parler)</label>
+              <label className="label">Style / prompt (Parler / Clonage)</label>
               <input
                 className="input"
                 placeholder="ex: slightly expressive, calm narrator."
                 value={style}
                 onChange={(e) => setStyle(e.target.value)}
+              />
+            </div>
+
+            <div className="field">
+              <label className="label">Reference voix (SpeechT5/XTTS/F5/CosyVoice)</label>
+              <input
+                className="input"
+                placeholder="C:\\samples\\voice.wav ou https://..."
+                value={voiceRef}
+                onChange={(e) => setVoiceRef(e.target.value)}
               />
             </div>
 
