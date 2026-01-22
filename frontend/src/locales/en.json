@@ -1,0 +1,152 @@
+{
+  "app": {
+    "title": "OratioViva Desktop",
+    "tagline": "Turn your content into clear audio."
+  },
+  "toolbar": {
+    "backendOk": "Backend OK",
+    "backendOff": "Backend OFF",
+    "modelOk": "Model Ready",
+    "modelMissing": "Model Missing",
+    "studio": "Studio",
+    "settings": "Settings",
+    "help": "Help",
+    "models": "Models"
+  },
+  "hero": {
+    "eyebrow": "OratioViva Studio",
+    "headline": "Turn your content into clear audio.",
+    "lede": "Paste text, choose a voice, generate with one click. Dia2 for streaming, Parler for style."
+  },
+  "form": {
+    "textLabel": "Text",
+    "charCount": "characters",
+    "copyText": "Copy",
+    "clearText": "Clear",
+    "voiceLabel": "Voice",
+    "speedLabel": "Speed: {speed}x",
+    "styleLabel": "Style / prompt (Parler / Cloning)",
+    "voiceRefLabel": "Voice reference (SpeechT5/XTTS/F5/CosyVoice)",
+    "generateBtn": "Generate Audio",
+    "synthesizing": "Synthesizing...",
+    "placeholder": "Paste your article or content. Ctrl+Enter to generate."
+  },
+  "status": {
+    "addText": "Add text before synthesizing.",
+    "modelMissing": "Install the model for {voice} first. Go to Settings → Models.",
+    "synthDone": "Synthesis complete.",
+    "synthError": "Synthesis error: {error}",
+    "copied": "Text copied to clipboard.",
+    "cleared": "Text cleared."
+  },
+  "models": {
+    "title": "Download TTS Models",
+    "description": "Select models to download. Downloaded models are stored in %LOCALAPPDATA%/OratioViva/models/",
+    "selectAll": "Select All",
+    "deselectAll": "Clear",
+    "downloadSelected": "Download {count} Model(s)",
+    "downloadingSelected": "Downloading {count} models...",
+    "installed": "Installed",
+    "notInstalled": "Not installed",
+    "downloading": "Downloading...",
+    "installBtn": "Install",
+    "downloadingBtn": "Downloading...",
+    "close": "Close",
+    "installForVoice": "Install model for {voice}",
+    "size": "Size",
+    "defaultModel": "Default",
+    "optionalModel": "Optional",
+    "models": {
+      "dia2": {
+        "name": "Dia2-2B",
+        "description": "Streaming dialogue TTS, conversational and natural.",
+        "size": "~2.5 GB",
+        "default": true
+      },
+      "bark": {
+        "name": "Bark Small",
+        "description": "Expressive, multi-lingual speech synthesis.",
+        "size": "~5 GB",
+        "default": false
+      },
+      "speecht5": {
+        "name": "SpeechT5 + HiFiGAN",
+        "description": "Neural TTS with high-quality vocoder.",
+        "size": "~2 GB",
+        "default": false
+      },
+      "parler": {
+        "name": "Parler-TTS",
+        "description": "Style-controlled TTS with promptable expression.",
+        "size": "~2 GB",
+        "default": false
+      },
+      "mms": {
+        "name": "MMS TTS",
+        "description": "Meta's Massively Multilingual Speech models.",
+        "size": "~500 MB",
+        "default": false
+      }
+    }
+  },
+  "history": {
+    "title": "History",
+    "recentGens": "Recent Generations",
+    "refresh": "Refresh",
+    "exportZip": "Export ZIP",
+    "deleteSelected": "Delete Selected",
+    "noItems": "No generations yet.",
+    "noAudio": "No audio",
+    "download": "Download",
+    "delete": "Delete",
+    "createdAt": "Created"
+  },
+  "jobs": {
+    "title": "Jobs",
+    "recentJobs": "Recent Jobs",
+    "queue": "Queue",
+    "jobCount": "{count} job{s}",
+    "refresh": "Refresh",
+    "deleteSelected": "Delete Selected",
+    "noJobs": "No jobs in queue.",
+    "retry": "Retry",
+    "remove": "Remove",
+    "status": {
+      "pending": "Pending",
+      "running": "Running",
+      "succeeded": "Done",
+      "failed": "Error",
+      "queued": "Queued",
+      "processing": "Processing"
+    }
+  },
+  "loading": {
+    "title": "OratioViva",
+    "subtitle": "Starting local server...",
+    "backendWait": "Waiting for backend...",
+    "backendReady": "Backend ready!",
+    "timeout": "Still starting... this can take a few minutes.",
+    "modelDownload": "Downloading model {model}...",
+    "modelDownloadDetail": "{downloaded} / {total}",
+    "errorTitle": "Backend Unavailable",
+    "errorDesc": "The local server is not responding. Start the backend then try again.",
+    "retryBtn": "Restart Backend"
+  },
+  "longAudio": {
+    "title": "Long Audio Options",
+    "description": "Process long texts in chunks for article reading.",
+    "mode": "Processing Mode",
+    "sequential": "Sequential",
+    "sequentialDesc": "Process chunks one at a time. Slower but reliable.",
+    "parallel": "Parallel",
+    "parallelDesc": "Process chunks simultaneously. Faster but uses more memory.",
+    "chunkSize": "Chunk Size",
+    "characters": "characters",
+    "continueBtn": "Continue with {mode} Mode"
+  },
+  "errors": {
+    "imageNotSupported": "Voice reference must be an audio file (WAV/MP3), not an image.",
+    "downloadError": "Download error: {error}",
+    "unknownVoice": "Unknown voice: {voice}"
+  }
+}

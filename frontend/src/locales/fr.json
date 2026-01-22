@@ -1,0 +1,129 @@
+{
+  "app": {
+    "title": "OratioViva Desktop",
+    "tagline": "Transformez votre contenu en audio clair."
+  },
+  "toolbar": {
+    "backendOk": "Backend OK",
+    "backendOff": "Backend OFF",
+    "modelOk": "Modèle Prêt",
+    "modelMissing": "Modèle Manquant",
+    "studio": "Studio",
+    "settings": "Paramètres",
+    "help": "Aide"
+  },
+  "hero": {
+    "eyebrow": "OratioViva Studio",
+    "headline": "Transformez votre contenu en audio clair.",
+    "lede": "Collez un texte, choisissez une voix, générez en un clic. Dia2 pour le streaming, Parler pour le style."
+  },
+  "form": {
+    "textLabel": "Texte",
+    "charCount": "caractères",
+    "copyText": "Copier",
+    "clearText": "Effacer",
+    "voiceLabel": "Voix",
+    "speedLabel": "Vitesse: {speed}x",
+    "styleLabel": "Style / prompt (Parler / Clonage)",
+    "voiceRefLabel": "Référence voix (SpeechT5/XTTS/F5/CosyVoice)",
+    "generateBtn": "Générer l'audio",
+    "synthesizing": "Synthèse...",
+    "placeholder": "Collez votre article ou contenu. Ctrl+Enter pour générer."
+  },
+  "status": {
+    "addText": "Ajoutez du texte avant de lancer la synthèse.",
+    "modelMissing": "Installez d'abord le modèle pour {voice}.",
+    "synthDone": "Synthèse terminée.",
+    "synthError": "Erreur de synthèse: {error}",
+    "copied": "Texte copié dans le presse-papier.",
+    "cleared": "Texte effacé."
+  },
+  "models": {
+    "title": "Télécharger Modèles TTS",
+    "description": "Sélectionnez les modèles à télécharger. Les modèles sont stockés dans %LOCALAPPDATA%/OratioViva/models/",
+    "selectAll": "Tout sélectionner",
+    "deselectAll": "Effacer",
+    "downloadSelected": "Télécharger {count} modèle(s)",
+    "downloadingSelected": "Téléchargement de {count} modèles...",
+    "installed": "Installé",
+    "notInstalled": "Non installé",
+    "downloading": "Téléchargement...",
+    "installBtn": "Installer",
+    "downloadingBtn": "Téléchargement...",
+    "close": "Fermer",
+    "installForVoice": "Installer le modèle pour {voice}"
+  },
+  "history": {
+    "title": "Historique",
+    "recentGens": "Dernières générations",
+    "refresh": "Rafraîchir",
+    "exportZip": "Export ZIP",
+    "deleteSelected": "Supprimer sélection",
+    "noItems": "Aucune génération pour l'instant.",
+    "noAudio": "Pas d'audio",
+    "download": "Télécharger",
+    "delete": "Supprimer",
+    "createdAt": "Créé"
+  },
+  "jobs": {
+    "title": "Jobs",
+    "recentJobs": "Jobs récents",
+    "queue": "File d'attente",
+    "jobCount": "{count} job{s}",
+    "refresh": "Rafraîchir",
+    "deleteSelected": "Supprimer sélection",
+    "noJobs": "Aucun job en cours.",
+    "retry": "Réessayer",
+    "remove": "Retirer",
+    "status": {
+      "pending": "En attente",
+      "running": "En cours",
+      "succeeded": "Terminé",
+      "failed": "Erreur",
+      "queued": "Mis en file",
+      "processing": "Traitement"
+    }
+  },
+  "analytics": {
+    "title": "Analytics",
+    "runtime": "Runtime",
+    "providerStatus": "État du provider",
+    "models": "Modèles",
+    "modelLocs": "Emplacements des modèles",
+    "searchPaths": "Chemins de recherche",
+    "activity": "Activité",
+    "metrics": "Métriques",
+    "historyItems": "Éléments d'historique",
+    "jobsStored": "Jobs stockés",
+    "audioDuration": "Durée audio (historique)"
+  },
+  "loading": {
+    "title": "OratioViva",
+    "subtitle": "Démarrage du serveur local...",
+    "backendWait": "En attente du backend...",
+    "backendReady": "Backend prêt!",
+    "timeout": "Le démarrage prend plus de temps que prévu.",
+    "modelDownload": "Téléchargement du modèle {model}...",
+    "modelDownloadDetail": "{downloaded} / {total}",
+    "errorTitle": "Backend indisponible",
+    "errorDesc": "Le serveur local ne répond pas. Lancez le backend puis réessayez.",
+    "retryBtn": "Relancer Backend"
+  },
+  "longAudio": {
+    "title": "Options Audio Long",
+    "description": "Traitez les longs textes en chunks pour la lecture d'articles.",
+    "mode": "Mode de traitement",
+    "sequential": "Séquentiel",
+    "sequentialDesc": "Traitez les chunks un par un. Plus lent mais fiable.",
+    "parallel": "Parallèle",
+    "parallelDesc": "Traitez les chunks simultanément. Plus rapide mais utilise plus de mémoire.",
+    "chunkSize": "Taille du chunk",
+    "characters": "caractères",
+    "continueBtn": "Continuer en mode {mode}"
+  },
+  "errors": {
+    "imageNotSupported": "La référence voix doit être un fichier audio (WAV/MP3), pas une image.",
+    "downloadError": "Erreur de téléchargement: {error}",
+    "unknownVoice": "Voix inconnue: {voice}"
+  }
+}

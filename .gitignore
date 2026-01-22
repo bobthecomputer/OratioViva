@@ -1,5 +1,41 @@
-# Ignore everything at repo root except the project and control files
-/*
-!/OratioViva/
-!/.gitignore
-!/AGENTS.md
+# Keep only control files at root
+!.gitignore
+!AGENTS.md
+!README.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.local
+.Python
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage/
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+frontend/dist/
+frontend/src-tauri/target/
+
+# Editors
+.vscode/
+.idea/
+
+# Outputs & logs
+logs/
+*.log
+audio/
+data/
+tmp/
+outputs/
+models/
