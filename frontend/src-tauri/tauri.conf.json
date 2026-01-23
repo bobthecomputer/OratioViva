@@ -1,23 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OratioViva",
-  "version": "0.5.17",
+  "version": "0.6.6",
   "identifier": "com.oratioviva.app",
   "build": {
     "beforeDevCommand": "npm run dev -- --host --port 5173 --mode tauri",
     "beforeBuildCommand": "npm run build -- --mode tauri",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
-  },
-  "bundle": {
-    "active": true,
-    "targets": "nsis",
-    "resources": [
-      "../../backend"
-    ],
-    "icon": [
-      "icons/icon.ico"
-    ]
   },
   "app": {
     "windows": [
@@ -31,5 +21,15 @@
     "security": {
       "csp": null
     }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "resources": [
+      "../../backend"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ]
   }
 }

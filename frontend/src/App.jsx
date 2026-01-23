@@ -8,6 +8,8 @@ import {
   deleteJob,
   deleteJobsBatch,
   downloadModels,
+  cancelDownload,
+  deleteDownloadedModel,
   exportZip,
   fetchHistory,
   fetchJob,
@@ -223,6 +225,7 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
   const [selectedModels, setSelectedModels] = useState(new Set());
   const [downloadingModels, setDownloadingModels] = useState(new Set());
   const [isBatchDownloading, setIsBatchDownloading] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
   const modelInfo = {
     dia2: { name: "Dia2-2B", description: "Streaming dialogue TTS, conversational and natural.", size: "~2.5 GB", default: true },
@@ -273,6 +276,20 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
       }, 1000);
     }
   }, [selectedModels, downloadModels, onRefresh]);
+
+  const handleCancelDownload = useCallback(async () => {
+    setIsCancelling(true);
+    try {
+      await cancelDownload();
+    } catch (e) {
+      console.error("Cancel failed:", e);
+    } finally {
+      setTimeout(() => {
+        setIsCancelling(false);
+        if (onRefresh) onRefresh();
+      }, 500);
+    }
+  }, [cancelDownload, onRefresh]);
 
   const installedCount = models.filter(m => m.exists).length;
   const notInstalledCount = models.filter(m => !m.exists).length;
@@ -357,17 +374,22 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
         </div>
 
         <div className="modal-footer">
-          <button className="button" onClick={onClose}>{t("models.close")}</button>
-          {selectedCount > 0 && (
+          <button className="ghost" onClick={onClose}>{t("models.close")}</button>
+          {isBatchDownloading && (
+            <button 
+              className="button button-danger" 
+              onClick={handleCancelDownload}
+              disabled={isCancelling}
+            >
+              {isCancelling ? "Cancelling..." : "Cancel Download"}
+            </button>
+          )}
+          {selectedCount > 0 && !isBatchDownloading && (
             <button 
               className="button button-primary button-large" 
               onClick={handleDownloadSelected}
-              disabled={isBatchDownloading}
             >
-              {isBatchDownloading 
-                ? t("models.downloadingSelected", { count: selectedCount })
-                : t("models.downloadSelected", { count: selectedCount })
-              }
+              {t("models.downloadSelected", { count: selectedCount })}
             </button>
           )}
         </div>
@@ -667,12 +689,26 @@ export default function App() {
     const voice = voices.find(v => v.id === voiceId);
     if (!voice) return null;
     const modelMap = {
-      dia2: "dia2", parler: "parler", bark: "bark", speecht5: "speecht5", mms: "mms",
-      xtts: "xtts", f5_tts: "f5_tts", cosyvoice: "cosyvoice",
+      dia2: "dia2",
+      parler: "parler",
+      bark: "bark",
+      speecht5: "speecht5",
+      mms: "mms",
+      xtts: "xtts",
+      f5_tts: "f5_tts",
+      cosyvoice: "cosyvoice",
+      chroma: "chroma_4b",
+      qwen: "qwen3_tts",
     };
-    for (const [key, pattern] of Object.entries(modelMap)) {
-      if (voice.id.includes(key) || voice.model?.toLowerCase().includes(key)) {
-        return key;
+    for (const [needle, modelId] of Object.entries(modelMap)) {
+      const lowerModel = (voice.model || "").toLowerCase();
+      if (
+        voice.id.includes(needle) ||
+        lowerModel.includes(needle) ||
+        voice.id.includes(modelId) ||
+        lowerModel.includes(modelId)
+      ) {
+        return modelId;
       }
     }
     return null;
@@ -699,9 +735,13 @@ export default function App() {
     while (attempts < maxAttempts) {
       const job = await fetchJob(jobId);
       const progressIndex = Math.min(attempts, statusMessages.length - 1);
-      const progressStep = 80 / statusMessages.length;
       setSynthesisStatus(statusMessages[progressIndex]?.message || "In progress...");
-      setSynthesisProgress(Math.round(progressIndex * progressStep + (attempts % 3) * 5));
+      const base = statusMessages[progressIndex]?.progress ?? 80;
+      // Fake progress while polling: monotonic (no oscillation) and capped until job completes.
+      setSynthesisProgress((prev) => {
+        const next = Math.max(prev || 0, base) + 1;
+        return Math.min(95, next);
+      });
 
       if (job.status === "succeeded") {
         setSynthesisProgress(100);

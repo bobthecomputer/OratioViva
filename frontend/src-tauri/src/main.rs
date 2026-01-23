@@ -243,6 +243,35 @@ fn verify_venv_works(python: &Path) -> bool {
     }
 }
 
+fn verify_dia2_venv(python: &Path) -> bool {
+    let mut cmd = Command::new(python);
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.args(&[
+        "-c",
+        "import torch; import transformers; import safetensors; import sphn; print('OK')",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+
+    match cmd.output() {
+        Ok(output) => {
+            if !output.status.success() {
+                if let Some(stderr) = String::from_utf8_lossy(&output.stderr).lines().next() {
+                    eprintln!("Dia2 venv verification failed: {}", stderr);
+                }
+            }
+            output.status.success()
+        }
+        Err(e) => {
+            eprintln!("Dia2 venv verification error: {}", e);
+            false
+        }
+    }
+}
+
 fn install_requirements(
     python: &Path,
     requirements: &Path,
@@ -435,12 +464,13 @@ fn try_create_venv_atomic(python_path: &Path, venv_path: &Path) -> std::io::Resu
 
 fn ensure_venv(
     app_data: &Path,
-    backend_root: &Path,
+    _backend_root: &Path,
     venv_name: &str,
+    requirements_path: &Path,
     log_path: Option<&Path>,
 ) -> Option<PathBuf> {
     let venv_path = get_venv_path(app_data, venv_name);
-    let requirements = get_requirements_path(backend_root);
+    let requirements = requirements_path.to_path_buf();
 
     if !requirements.exists() {
         eprintln!("Requirements file not found: {:?}", requirements);
@@ -468,9 +498,16 @@ fn ensure_venv(
                 "Venv verification failed, reinstalling dependencies in {}...",
                 venv_name
             );
-            if let Err(e) = install_requirements(&venv_python, &requirements, log_path) {
-                eprintln!("Failed to install requirements in {}: {}", venv_name, e);
-                return None;
+            match install_requirements(&venv_python, &requirements, log_path) {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!("Failed to install requirements in {}", venv_name);
+                    return None;
+                }
+                Err(e) => {
+                    eprintln!("Failed to install requirements in {}: {}", venv_name, e);
+                    return None;
+                }
             }
 
             if verify_venv_works(&venv_python) {
@@ -491,25 +528,61 @@ fn ensure_venv(
 fn ensure_backend_venv(app: &AppHandle, log_path: Option<&Path>) -> Option<PathBuf> {
     let backend_root = find_backend_root(app)?;
     let app_data = get_app_data_dir(app)?;
-    ensure_venv(&app_data, &backend_root, MAIN_VENV_NAME, log_path)
+    let requirements = get_requirements_path(&backend_root);
+    ensure_venv(&app_data, &backend_root, MAIN_VENV_NAME, &requirements, log_path)
 }
 
 fn ensure_dia2_venv(app: &AppHandle, log_path: Option<&Path>) -> Option<PathBuf> {
     let backend_root = find_backend_root(app)?;
     let app_data = get_app_data_dir(app)?;
-    ensure_venv(&app_data, &backend_root, DIA2_VENV_NAME, log_path)
+    let requirements_dia2 = backend_root.join("requirements_dia2.txt");
+    let requirements_default = get_requirements_path(&backend_root);
+    let requirements = if requirements_dia2.exists() {
+        &requirements_dia2
+    } else {
+        &requirements_default
+    };
+    let python = ensure_venv(&app_data, &backend_root, DIA2_VENV_NAME, requirements, log_path)?;
+
+    // If Dia2 deps are missing (older installs), force-install the Dia2 requirements.
+    if !verify_dia2_venv(&python) {
+        println!("Dia2 deps missing, installing requirements...");
+        match install_requirements(&python, requirements, log_path) {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!("Failed to install Dia2 requirements");
+                return None;
+            }
+            Err(e) => {
+                eprintln!("Failed to install Dia2 requirements: {}", e);
+                return None;
+            }
+        }
+        if !verify_dia2_venv(&python) {
+            eprintln!("Dia2 venv still missing required packages after install");
+            return None;
+        }
+    }
+
+    Some(python)
 }
 
 fn find_backend_root(app: &AppHandle) -> Option<PathBuf> {
     if let Ok(resource_dir) = app.path().resource_dir() {
+        println!("[find_backend_root] resource_dir: {:?}", resource_dir);
+
         let candidates = [
             resource_dir.join("backend"),
             resource_dir.join("resources").join("backend"),
             resource_dir.join("_up_").join("_up_").join("backend"),
         ];
-        for candidate in candidates {
+        for candidate in &candidates {
+            println!("[find_backend_root] Checking candidate: {:?}", candidate);
+            println!("[find_backend_root] server.py exists: {}", candidate.join("server.py").exists());
+            println!("[find_backend_root] certs exists: {}", candidate.join("certs").join("cacert.pem").exists());
             if candidate.join("server.py").exists() {
-                return Some(candidate);
+                println!("[find_backend_root] Found backend at: {:?}", candidate);
+                return Some(candidate.clone());
             }
         }
 
@@ -517,11 +590,15 @@ fn find_backend_root(app: &AppHandle) -> Option<PathBuf> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let candidate = path.join("backend");
+                println!("[find_backend_root] Scanning dir: {:?}, checking: {:?}", path, candidate);
+                println!("[find_backend_root] server.py exists: {}", candidate.join("server.py").exists());
                 if candidate.join("server.py").exists() {
+                    println!("[find_backend_root] Found backend at: {:?}", candidate);
                     return Some(candidate);
                 }
                 let nested = path.join("_up_").join("backend");
                 if nested.join("server.py").exists() {
+                    println!("[find_backend_root] Found backend at (nested): {:?}", nested);
                     return Some(nested);
                 }
             }
@@ -530,9 +607,11 @@ fn find_backend_root(app: &AppHandle) -> Option<PathBuf> {
 
     let dev = PathBuf::from("C:/Users/paul/OratioViva/backend");
     if dev.join("server.py").exists() {
+        println!("[find_backend_root] Using development backend: {:?}", dev);
         return Some(dev);
     }
 
+    println!("[find_backend_root] Backend NOT found!");
     None
 }
 
@@ -554,6 +633,10 @@ fn start_backend(app: &AppHandle, python_path: &Path, port: u16) -> Option<std::
     let outputs_dir = data_dir.join("outputs");
     let logs_dir = data_dir.join("logs");
 
+    // Dia2 runs in its own venv. Backend needs to know where that interpreter is.
+    let dia2_venv_dir = get_venv_path(&data_dir, DIA2_VENV_NAME);
+    let dia2_python = venv_python_exe(&dia2_venv_dir);
+
     for dir in [&models_dir, &outputs_dir, &logs_dir] {
         if let Err(e) = fs::create_dir_all(dir) {
             eprintln!("Failed to create directory {:?}: {}", dir, e);
@@ -562,6 +645,11 @@ fn start_backend(app: &AppHandle, python_path: &Path, port: u16) -> Option<std::
 
     let log_path = logs_dir.join("oratioviva-backend.log");
     let log_file = File::create(&log_path).ok();
+
+    // Find the bundled certificates path
+    let bundled_cert_path = backend_root.join("certs").join("cacert.pem");
+    println!("Checking for bundled cert at: {:?}", bundled_cert_path);
+    println!("Bundled cert exists: {}", bundled_cert_path.exists());
 
     let mut cmd = Command::new(python_path);
     #[cfg(target_os = "windows")]
@@ -578,8 +666,19 @@ fn start_backend(app: &AppHandle, python_path: &Path, port: u16) -> Option<std::
         .env("ORATIO_MODELS_DIR", &models_dir)
         .env("ORATIO_OUTPUTS_DIR", &outputs_dir)
         .env("ORATIO_LOG_DIR", &logs_dir)
+        .env("ORATIO_DIA2_PYTHON", &dia2_python)
         .env("ORATIO_PORT", port.to_string())
+        .env("TAURI_RESOURCE_DIR", &backend_root)
         .stdin(Stdio::null());
+
+    // Only set ORATIO_CA_BUNDLE if bundled certificate exists
+    if bundled_cert_path.exists() {
+        let cert_path_str = bundled_cert_path.to_string_lossy().to_string();
+        println!("Setting ORATIO_CA_BUNDLE to: {}", cert_path_str);
+        cmd.env("ORATIO_CA_BUNDLE", cert_path_str);
+    } else {
+        println!("NOT setting ORATIO_CA_BUNDLE - bundled cert not found");
+    }
 
     if let Some(file) = log_file {
         let err_file = file.try_clone().ok();

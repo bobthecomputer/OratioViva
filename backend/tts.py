@@ -11,13 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from huggingface_hub import InferenceClient
-
 try:
-    # Optional import, only used for provider auto-detection
     from backend.models import ModelManager
-except Exception:  # noqa: BLE001
-    ModelManager = None  # type: ignore[assignment]
+except Exception:
+    ModelManager = None
 
 
 @dataclass(frozen=True)
@@ -68,32 +65,42 @@ ALL_VOICE_PRESETS = [
         description="Meta MMS TTS (CPU/<=8GB VRAM), voix naturelle style lecture.",
     ),
     VoicePreset(
-        id="kokoro_en_us_0",
-        model="hexgrad/Kokoro-82M",
-        language="en",
-        label="Kokoro US Neutral",
-        description="Rapide, clair, anglais US",
-    ),
-    VoicePreset(
-        id="kokoro_en_gb_0",
-        model="hexgrad/Kokoro-82M",
-        language="en",
-        label="Kokoro UK Bright",
-        description="Anglais UK, ton clair",
-    ),
-    VoicePreset(
-        id="kokoro_fr_0",
-        model="hexgrad/Kokoro-82M",
-        language="fr",
-        label="Kokoro Francais Clair",
-        description="Francais, neutralite",
-    ),
-    VoicePreset(
         id="dia2_2b_en",
         model="nari-labs/Dia2-2B",
         language="en",
         label="Dia2 2B EN",
         description="Streaming dialogue TTS, 2min context, conversational",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_en",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="en",
+        label="Qwen3 CustomVoice (Ryan)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (English male). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_aiden_en",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="en",
+        label="Qwen3 CustomVoice (Aiden)",
+        voice="Aiden",
+        description="Qwen3-TTS CustomVoice (English male). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_vivian_zh",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="zh",
+        label="Qwen3 CustomVoice (Vivian)",
+        voice="Vivian",
+        description="Qwen3-TTS CustomVoice (Chinese female). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="chroma_4b_en",
+        model="FlashLabs/Chroma-4B",
+        language="en",
+        label="Chroma-4B",
+        description="FlashLabs Chroma-4B (gated). Optional voice_ref + style prompt.",
     ),
 ]
 
@@ -114,7 +121,7 @@ class AudioResult:
     created_at: datetime
     model: str
     voice_id: str
-    source: str  # "inference" or "stub"
+    source: str
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm"}
@@ -129,22 +136,19 @@ class TTSService:
         self,
         audio_dir: Path,
         base_audio_url: str = "/audio",
-        hf_token: Optional[str] = None,
         use_stub: bool = False,
         fallback_stub: bool = False,
-        provider: str = "auto",  # "auto" | "inference" | "local" | "stub"
+        provider: str = "local",
         models_dir: Optional[Path] = None,
         model_manager: Optional["ModelManager"] = None,
     ) -> None:
         self.audio_dir = audio_dir
         self.base_audio_url = base_audio_url.rstrip("/")
-        self.hf_token = hf_token
         self.use_stub = use_stub
         self.fallback_stub = fallback_stub
         self.provider = provider
         self.models_dir = models_dir
         self.model_manager = model_manager
-        self._clients: Dict[str, InferenceClient] = {}
         self._local_pipelines: Dict[str, object] = {}
         self._parler_models: Dict[str, Tuple[Any, Any]] = {}
         self._speaker_encoder: Optional[object] = None
@@ -153,6 +157,19 @@ class TTSService:
 
     def list_voices(self):
         return [voice.__dict__ for voice in VOICE_PRESETS]
+
+    def current_provider(self) -> str:
+        if self.use_stub:
+            return "stub"
+        return self.provider
+
+    def provider_message(self, statuses=None) -> str:
+        if self.use_stub:
+            return "Running in stub mode (ORATIO_TTS_STUB=1)"
+        return ""
+
+    def local_support(self, repo_id: str) -> Tuple[bool, Optional[str]]:
+        return self._local_support(repo_id)
 
     def _supports_voice_ref(self, model_id: str) -> bool:
         lower_id = model_id.lower()
@@ -197,7 +214,7 @@ class TTSService:
     ) -> object:
         try:
             from transformers import pipeline
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "Local pipeline requires transformers installed"
             ) from exc
@@ -296,7 +313,6 @@ class TTSService:
         style: Optional[str] = None,
         voice_ref: Optional[str] = None,
         job_id: Optional[str] = None,
-        provider: Optional[str] = None,
     ) -> AudioResult:
         if voice_id not in VOICE_BY_ID:
             raise ValueError(f"Unknown voice_id: {voice_id}")
@@ -309,8 +325,7 @@ class TTSService:
         voice = VOICE_BY_ID[voice_id]
         created_at = datetime.now(timezone.utc)
 
-        resolved_provider = provider or self._resolve_provider(voice.model)
-        use_stub = self.use_stub or resolved_provider == "stub"
+        use_stub = self.use_stub
 
         if use_stub:
             duration = self._generate_stub_audio(text, destination, speed=speed)
@@ -325,82 +340,71 @@ class TTSService:
                 source="stub",
             )
 
-        if resolved_provider == "local":
-            supported, reason = self._local_support(voice.model)
-            if not supported:
-                raise RuntimeError(reason or "Modele local indisponible.")
-            if not self._has_local_models(voice.model):
-                raise RuntimeError(
-                    "Modele local manquant. Telechargez-le via l'onglet Modeles."
+        supported, reason = self._local_support(voice.model)
+        if not supported:
+            if self.fallback_stub:
+                duration = self._generate_stub_audio(text, destination, speed=speed)
+                return AudioResult(
+                    job_id=job_id,
+                    audio_path=destination,
+                    audio_url=f"{self.base_audio_url}/{destination.name}",
+                    duration_seconds=duration,
+                    created_at=created_at,
+                    model=voice.model,
+                    voice_id=voice_id,
+                    source="stub",
                 )
+            raise RuntimeError(reason or "Modele local indisponible.")
+
+        if not self._has_local_models(voice.model):
+            if self.fallback_stub:
+                duration = self._generate_stub_audio(text, destination, speed=speed)
+                return AudioResult(
+                    job_id=job_id,
+                    audio_path=destination,
+                    audio_url=f"{self.base_audio_url}/{destination.name}",
+                    duration_seconds=duration,
+                    created_at=created_at,
+                    model=voice.model,
+                    voice_id=voice_id,
+                    source="stub",
+                )
+            raise RuntimeError(
+                "Modele local manquant. Telechargez-le via l'onglet Modeles."
+            )
 
         voice_ref_payload = None
         if self._supports_voice_ref(voice.model):
-            if resolved_provider == "inference":
-                voice_ref_payload = self._resolve_voice_ref(voice_ref)
-                if voice_ref_payload is None:
-                    raise ValueError(
-                        "Ce modele requiert une reference de voix (voice_ref)."
-                    )
-            else:
-                if not voice_ref or not voice_ref.strip():
-                    raise ValueError(
-                        "Ce modele requiert une reference de voix (voice_ref)."
-                    )
+            if not voice_ref or not voice_ref.strip():
+                raise ValueError(
+                    "Ce modele requiert une reference de voix (voice_ref)."
+                )
 
         try:
-            if resolved_provider == "local":
-                return self._synthesize_local(
-                    text=text,
-                    voice=voice,
-                    job_id=job_id,
-                    destination=destination,
-                    speed=speed,
-                    style=style,
-                    voice_ref=voice_ref,
-                    created_at=created_at,
-                )
-            if resolved_provider == "inference":
-                return self._synthesize_inference(
-                    text=text,
-                    voice=voice,
-                    voice_ref=voice_ref_payload,
-                    job_id=job_id,
-                    destination=destination,
-                    speed=speed,
-                    style=style,
-                    created_at=created_at,
-                )
-            duration = self._generate_stub_audio(text, destination, speed=speed)
-            return AudioResult(
+            return self._synthesize_local(
+                text=text,
+                voice=voice,
                 job_id=job_id,
-                audio_path=destination,
-                audio_url=f"{self.base_audio_url}/{destination.name}",
-                duration_seconds=duration,
+                destination=destination,
+                speed=speed,
+                style=style,
+                voice_ref=voice_ref,
                 created_at=created_at,
-                model=voice.model,
-                voice_id=voice_id,
-                source="stub",
             )
         except Exception:
-            if not self.fallback_stub and resolved_provider != "stub":
-                raise
-            duration = self._generate_stub_audio(text, destination, speed=speed)
-            return AudioResult(
-                job_id=job_id,
-                audio_path=destination,
-                audio_url=f"{self.base_audio_url}/{destination.name}",
-                duration_seconds=duration,
-                created_at=created_at,
-                model=voice.model,
-                voice_id=voice_id,
-                source="stub",
-            )
-
-    def _get_client(self, model: str) -> InferenceClient:
-        if model not in self._clients:
-            self._clients[model] = InferenceClient(model=model, token=self.hf_token)
-        return self._clients[model]
+            if self.fallback_stub:
+                duration = self._generate_stub_audio(text, destination, speed=speed)
+                return AudioResult(
+                    job_id=job_id,
+                    audio_path=destination,
+                    audio_url=f"{self.base_audio_url}/{destination.name}",
+                    duration_seconds=duration,
+                    created_at=created_at,
+                    model=voice.model,
+                    voice_id=voice_id,
+                    source="stub",
+                )
+            raise
 
     def _resolve_model_path(self, model_name: str) -> str:
         model_path = model_name
@@ -414,24 +418,239 @@ class TTSService:
                 model_path = str(candidate)
         return model_path
 
+    def _heavy_python(self) -> Path:
+        """Return python executable for heavy models (torch/transformers).
+
+        We reuse the Dia2 venv because it already carries torch+transformers.
+        """
+        import os
+
+        override = os.getenv("ORATIO_DIA2_PYTHON")
+        if override:
+            return Path(override)
+        backend_dir = Path(__file__).resolve().parent
+        return backend_dir.parent / ".venv_dia2" / "Scripts" / "python.exe"
+
+    def _ensure_qwen_tts_deps(self, python_exe: Path) -> None:
+        """Install qwen-tts deps into the heavy venv if missing."""
+        import subprocess
+
+        check = subprocess.run(
+            [str(python_exe), "-c", "import qwen_tts"],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode == 0:
+            return
+
+        requirements = Path(__file__).resolve().parent / "requirements_qwen_tts.txt"
+        if not requirements.exists():
+            raise RuntimeError(
+                "Qwen3-TTS dependencies missing and requirements_qwen_tts.txt not found."
+            )
+
+        install = subprocess.run(
+            [
+                str(python_exe),
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(requirements),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if install.returncode != 0:
+            details = (install.stderr or install.stdout or "").strip()
+            raise RuntimeError(f"Failed to install Qwen3-TTS dependencies: {details}")
+
+    def _synthesize_qwen3_customvoice_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        import json
+        import subprocess
+
+        python_exe = self._heavy_python()
+        if not python_exe.exists():
+            raise RuntimeError(
+                "Heavy python env not found. Restart the app to let it set up the heavy environment."
+            )
+
+        self._ensure_qwen_tts_deps(python_exe)
+
+        backend_dir = Path(__file__).resolve().parent
+        worker_script = backend_dir / "qwen_tts_worker.py"
+        if not worker_script.exists():
+            raise RuntimeError("qwen_tts_worker.py not found")
+
+        # Prefer explicit speaker from preset.
+        speaker = voice.voice or "Ryan"
+
+        # Map our language code to Qwen naming.
+        lang_map = {
+            "en": "English",
+            "zh": "Chinese",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "de": "German",
+            "fr": "French",
+            "ru": "Russian",
+            "pt": "Portuguese",
+            "es": "Spanish",
+            "it": "Italian",
+        }
+        language = lang_map.get((voice.language or "").lower(), "Auto")
+        instruct = style or ""
+
+        cmd = [
+            str(python_exe),
+            str(worker_script),
+            text,
+            model_path,
+            str(destination),
+            language,
+            speaker,
+            instruct,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            err = result.stderr or result.stdout or "Unknown error"
+            raise RuntimeError(f"Qwen3-TTS worker failed: {err}")
+
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Invalid JSON from Qwen3 worker: {result.stdout}")
+        if not output.get("success"):
+            raise RuntimeError(output.get("error") or "Qwen3-TTS generation failed")
+
+        duration = float(output.get("duration", 0.0))
+        if speed != 1.0 and destination.exists():
+            self._apply_speed_to_wav(destination, speed)
+            if duration:
+                duration = duration / speed
+
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
+    def _synthesize_chroma_local(
+        self,
+        *,
+        text: str,
+        voice: VoicePreset,
+        job_id: str,
+        destination: Path,
+        speed: float,
+        style: Optional[str],
+        voice_ref: Optional[str],
+        created_at: datetime,
+        model_path: str,
+    ) -> AudioResult:
+        import json
+        import subprocess
+
+        python_exe = self._heavy_python()
+        if not python_exe.exists():
+            raise RuntimeError(
+                "Heavy python env not found. Restart the app to let it set up the heavy environment."
+            )
+
+        backend_dir = Path(__file__).resolve().parent
+        worker_script = backend_dir / "chroma_worker.py"
+        if not worker_script.exists():
+            raise RuntimeError("chroma_worker.py not found")
+
+        prompt_text = style or ""
+        prompt_audio = ""
+        if voice_ref:
+            prompt_audio = validate_voice_ref(voice_ref)
+
+        cmd = [
+            str(python_exe),
+            str(worker_script),
+            text,
+            model_path,
+            str(destination),
+            prompt_text,
+            prompt_audio,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if result.returncode != 0:
+            err = result.stderr or result.stdout or "Unknown error"
+            raise RuntimeError(f"Chroma worker failed: {err}")
+
+        try:
+            output = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise RuntimeError(f"Invalid JSON from Chroma worker: {result.stdout}")
+        if not output.get("success"):
+            raise RuntimeError(output.get("error") or "Chroma generation failed")
+
+        duration = float(output.get("duration", 0.0))
+        if speed != 1.0 and destination.exists():
+            self._apply_speed_to_wav(destination, speed)
+            if duration:
+                duration = duration / speed
+
+        return AudioResult(
+            job_id=job_id,
+            audio_path=destination,
+            audio_url=f"{self.base_audio_url}/{destination.name}",
+            duration_seconds=duration,
+            created_at=created_at,
+            model=voice.model,
+            voice_id=voice.id,
+            source="local",
+        )
+
     def _local_support(self, model_id: str) -> Tuple[bool, Optional[str]]:
         lower_id = model_id.lower()
         if "parler-tts" in lower_id:
             try:
-                import parler_tts  # type: ignore  # noqa: F401
+                import parler_tts
             except Exception:
                 return False, "Parler local requiert le package parler-tts."
             return True, None
         if "bark" in lower_id:
             try:
-                import transformers  # type: ignore  # noqa: F401
+                import transformers
             except Exception:
                 return False, "Bark local requiert transformers installe."
             return True, None
         if "speecht5" in lower_id:
             try:
-                import torch  # type: ignore  # noqa: F401
-                from transformers import (  # type: ignore  # noqa: F401
+                import torch
+                from transformers import (
                     SpeechT5ForTextToSpeech,
                     SpeechT5HifiGan,
                     SpeechT5Processor,
@@ -441,82 +660,64 @@ class TTSService:
             return True, None
         if "mms-tts" in lower_id or "mms_tts" in lower_id:
             try:
-                import torch  # type: ignore  # noqa: F401
-                from transformers import AutoProcessor, VitsModel  # type: ignore  # noqa: F401
+                import torch
+                from transformers import AutoProcessor, VitsModel
             except Exception:
                 return False, "MMS local requiert torch + transformers installes."
             return True, None
         if "kokoro" in lower_id:
             try:
-                import kokoro  # type: ignore  # noqa: F401
+                import kokoro
             except Exception:
                 return (
                     False,
-                    "Kokoro local indisponible (package kokoro non supporte en Python 3.13); utilisez HF_TOKEN pour l'inference ou restez en stub.",
+                    "Kokoro local indisponible (package kokoro non supporte en Python 3.13).",
                 )
             return True, None
         if "xtts" in lower_id:
             try:
-                from TTS.api import TTS  # type: ignore  # noqa: F401
+                from TTS.api import TTS
             except Exception:
                 try:
-                    import transformers  # type: ignore  # noqa: F401
+                    import transformers
                 except Exception:
                     return False, "XTTS local requiert TTS ou transformers installes."
             return True, None
         if "f5-tts" in lower_id or "f5_tts" in lower_id:
             try:
-                import transformers  # type: ignore  # noqa: F401
+                import transformers
             except Exception:
                 return False, "F5-TTS local requiert transformers installe."
             return True, None
         if "cosyvoice" in lower_id:
             try:
-                import transformers  # type: ignore  # noqa: F401
+                import transformers
             except Exception:
                 return False, "CosyVoice local requiert transformers installe."
             return True, None
-        if "vibevoice" in lower_id:
-            return (
-                False,
-                "VibeVoice requiert HF Inference (set HF_TOKEN). Utilisez un autre modele pour le mode local.",
-            )
-        if "outetts" in lower_id or "outet" in lower_id:
-            return (
-                False,
-                "OuteTTS a des problemes de compatibilite. Utilisez un autre modele local.",
-            )
-        if "fireredtts" in lower_id or "fireredtts2" in lower_id:
-            return (
-                False,
-                "FireRedTTS-2 requiert une configuration speciale. Utilisez inference HF ou un autre modele local.",
-            )
         if "dia2" in lower_id:
             return True, None
-        return True, None
+        if "chroma" in lower_id:
+            return True, None
+        if "qwen" in lower_id and "tts" in lower_id:
+            return True, None
         return True, None
 
     def _supports_local_model(self, model_id: str) -> bool:
         supported, _ = self._local_support(model_id)
         return supported
 
-    def _resolve_provider(self, model_id: Optional[str] = None) -> str:
-        if self.provider in {"local", "inference", "stub"}:
-            return self.provider
-        # auto: prefer local models, then inference (token), else stub
-        if self._has_local_models(model_id):
-            return "local"
-        if self.hf_token:
-            return "inference"
-        return "stub"
-
-    def current_provider(self) -> str:
-        """Expose the provider resolved at runtime."""
-        return self._resolve_provider()
-
     def _has_local_models(self, model_id: Optional[str] = None) -> bool:
         if model_id and not self._supports_local_model(model_id):
             return False
+
+        # Qwen3-TTS requires its tokenizer repo to be present as well.
+        if model_id and "qwen3-tts" in model_id.lower():
+            if self.model_manager is None:
+                return False
+            tokenizer_repo = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
+            if self.model_manager.resolve_model_path(tokenizer_repo) is None:
+                return False
 
         statuses = (
             self.model_manager.status() if self.model_manager is not None else None
@@ -545,24 +746,6 @@ class TTSService:
         if model_id:
             return (self.models_dir / model_id.replace("/", "_")).exists()
         return any(self.models_dir.glob("*"))
-
-    def local_support(self, model_id: str) -> Tuple[bool, Optional[str]]:
-        """Expose local support info for API responses."""
-        return self._local_support(model_id)
-
-    def provider_message(self, statuses: list[Any]) -> Optional[str]:
-        """Give a human-readable reason when local provider is unavailable."""
-        resolved = self.current_provider()
-        if resolved in {"local", "stub"}:
-            for status in statuses:
-                supported, reason = self._local_support(getattr(status, "repo_id", ""))
-                if not supported and reason:
-                    return reason
-            if self.model_manager is not None and self.model_manager.needs_download():
-                return "Modeles locaux manquants. Telechargez-les pour activer le mode local."
-        if resolved == "stub" and not self.hf_token:
-            return "Aucun token HF fourni; utilisation du mode stub."
-        return None
 
     def _write_wav_bytes(
         self, audio_bytes: bytes, destination: Path, speed: float
@@ -606,43 +789,6 @@ class TTSService:
                 wav_file.writeframes(struct.pack("<h", value))
 
         return duration
-
-    def _synthesize_inference(
-        self,
-        *,
-        text: str,
-        voice: VoicePreset,
-        voice_ref: Optional[object],
-        job_id: str,
-        destination: Path,
-        speed: float,
-        style: Optional[str],
-        created_at: datetime,
-    ) -> AudioResult:
-        client = self._get_client(voice.model)
-        lower_model = voice.model.lower()
-        kwargs = {}
-        if voice_ref is not None:
-            kwargs["voice"] = voice_ref
-        elif voice.voice:
-            kwargs["voice"] = voice.voice
-        if style:
-            kwargs["style"] = style
-        if "bark" in lower_model:
-            audio_bytes = client.text_to_audio(text, model=voice.model)
-        else:
-            audio_bytes = client.text_to_speech(text, model=voice.model, **kwargs)
-        duration = self._write_wav_bytes(audio_bytes, destination, speed=speed)
-        return AudioResult(
-            job_id=job_id,
-            audio_path=destination,
-            audio_url=f"{self.base_audio_url}/{destination.name}",
-            duration_seconds=duration,
-            created_at=created_at,
-            model=voice.model,
-            voice_id=voice.id,
-            source="inference",
-        )
 
     def _synthesize_local(
         self,
@@ -707,6 +853,31 @@ class TTSService:
                 model_path=model_path,
             )
 
+        if "qwen3-tts" in lower_model and "customvoice" in lower_model:
+            return self._synthesize_qwen3_customvoice_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                created_at=created_at,
+                model_path=model_path,
+            )
+
+        if "chroma" in lower_model:
+            return self._synthesize_chroma_local(
+                text=text,
+                voice=voice,
+                job_id=job_id,
+                destination=destination,
+                speed=speed,
+                style=style,
+                voice_ref=voice_ref,
+                created_at=created_at,
+                model_path=model_path,
+            )
+
         tts = self._get_local_pipeline(model_key, task="text-to-speech")
         outputs = self._run_tts_pipeline(tts, text, speed=speed)
         audio = outputs["audio"] if isinstance(outputs, dict) else outputs
@@ -742,7 +913,7 @@ class TTSService:
             import torch
             from parler_tts import ParlerTTSForConditionalGeneration
             from transformers import AutoTokenizer
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "Parler-TTS local mode requires the parler-tts package installed"
             ) from exc
@@ -792,7 +963,7 @@ class TTSService:
     ) -> AudioResult:
         try:
             from transformers import pipeline
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "Bark local mode requires transformers installed"
             ) from exc
@@ -823,145 +994,12 @@ class TTSService:
             source="local",
         )
 
-    def _synthesize_xtts_local(
-        self,
-        *,
-        text: str,
-        voice: VoicePreset,
-        job_id: str,
-        destination: Path,
-        speed: float,
-        style: Optional[str],
-        voice_ref: Optional[str],
-        created_at: datetime,
-        model_path: str,
-    ) -> AudioResult:
-        voice_ref_path = self._resolve_local_voice_ref_path(voice_ref, required=True)
-        xtts_error: Optional[Exception] = None
-        try:
-            from TTS.api import TTS
-
-            model_key = f"xtts::{model_path}"
-            if model_key not in self._local_pipelines:
-                model_dir = Path(model_path)
-                tts_model = None
-                if model_dir.exists() and model_dir.is_dir():
-                    config_path = model_dir / "config.json"
-                    checkpoint = model_dir / "model.pth"
-                    if not checkpoint.exists():
-                        candidates = [
-                            p
-                            for p in model_dir.glob("*.pth")
-                            if "speaker" not in p.name.lower()
-                        ]
-                        if candidates:
-                            checkpoint = candidates[0]
-                    if config_path.exists() and checkpoint.exists():
-                        tts_model = TTS(
-                            model_path=str(checkpoint),
-                            config_path=str(config_path),
-                            progress_bar=False,
-                            gpu=False,
-                        )
-                    else:
-                        tts_model = TTS(
-                            model_path=str(model_dir), progress_bar=False, gpu=False
-                        )
-                else:
-                    tts_model = TTS(
-                        model_name=voice.model, progress_bar=False, gpu=False
-                    )
-                self._local_pipelines[model_key] = tts_model
-
-            tts_model = self._local_pipelines[model_key]
-            language = (
-                voice.language
-                if voice.language != "multi"
-                else os.getenv("ORATIO_TTS_LANGUAGE", "en")
-            )
-            audio = tts_model.tts(
-                text=text,
-                speaker_wav=str(voice_ref_path),
-                language=language,
-            )
-            sample_rate = getattr(
-                getattr(tts_model, "synthesizer", None), "output_sample_rate", 24000
-            )
-            duration = self._write_array_to_wav(audio, sample_rate, destination)
-            return AudioResult(
-                job_id=job_id,
-                audio_path=destination,
-                audio_url=f"{self.base_audio_url}/{destination.name}",
-                duration_seconds=duration,
-                created_at=created_at,
-                model=voice.model,
-                voice_id=voice.id,
-                source="local",
-            )
-        except Exception as exc:  # noqa: BLE001
-            xtts_error = exc
-
-        try:
-            return self._synthesize_voice_clone_pipeline_local(
-                text=text,
-                voice=voice,
-                job_id=job_id,
-                destination=destination,
-                speed=speed,
-                style=style,
-                voice_ref=voice_ref,
-                created_at=created_at,
-                model_path=model_path,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(
-                f"XTTS local a echoue (TTS puis pipeline): {xtts_error}"
-            ) from exc
-
-    def _synthesize_voice_clone_pipeline_local(
-        self,
-        *,
-        text: str,
-        voice: VoicePreset,
-        job_id: str,
-        destination: Path,
-        speed: float,
-        style: Optional[str],
-        voice_ref: Optional[str],
-        created_at: datetime,
-        model_path: str,
-    ) -> AudioResult:
-        voice_ref_path = self._resolve_local_voice_ref_path(voice_ref, required=True)
-        tts = self._get_local_pipeline(model_path, task="text-to-speech")
-        outputs = self._run_tts_pipeline(
-            tts,
-            text,
-            speed=speed,
-            voice_ref_path=voice_ref_path,
-            prompt_text=style,
-        )
-        audio = outputs["audio"] if isinstance(outputs, dict) else outputs
-        sampling_rate = (
-            outputs.get("sampling_rate", 24000) if isinstance(outputs, dict) else 24000
-        )
-        duration = self._write_array_to_wav(audio, sampling_rate, destination)
-        return AudioResult(
-            job_id=job_id,
-            audio_path=destination,
-            audio_url=f"{self.base_audio_url}/{destination.name}",
-            duration_seconds=duration,
-            created_at=created_at,
-            model=voice.model,
-            voice_id=voice.id,
-            source="local",
-        )
-
     def _resolve_speecht5_embedding(self, voice_ref: str):
         try:
             import torch
             import torchaudio
             from torchaudio.pipelines import SUPERB_XVECTOR
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "SpeechT5 voice_ref requiert torchaudio installe."
             ) from exc
@@ -1020,7 +1058,7 @@ class TTSService:
                 SpeechT5HifiGan,
                 SpeechT5Processor,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "SpeechT5 local mode requires transformers installed"
             ) from exc
@@ -1040,7 +1078,7 @@ class TTSService:
             )
             speaker_embeddings = self._resolve_speecht5_embedding(str(voice_ref_path))
         else:
-            speaker_embeddings = torch.zeros((1, 512))  # neutral speaker embedding
+            speaker_embeddings = torch.zeros((1, 512))
         speaker_embeddings = speaker_embeddings.to(model.device)
 
         with torch.inference_mode():
@@ -1050,7 +1088,6 @@ class TTSService:
                 vocoder=vocoder,
             )
         if speed != 1.0:
-            # Simple resample by adjusting frame rate via numpy; keep it lightweight
             speech = torch.nn.functional.interpolate(
                 speech.unsqueeze(0).unsqueeze(0),
                 scale_factor=1 / speed,
@@ -1088,7 +1125,7 @@ class TTSService:
             import torch
             import torch.nn.functional as F
             from transformers import AutoProcessor, VitsModel
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(
                 "MMS local mode requires transformers and torch installed"
             ) from exc
@@ -1104,7 +1141,7 @@ class TTSService:
         with torch.inference_mode():
             waveform = model(**inputs).waveform
 
-        if waveform.ndim == 2:  # (batch, time)
+        if waveform.ndim == 2:
             waveform = waveform.unsqueeze(1)
         if speed != 1.0:
             waveform = F.interpolate(
@@ -1146,11 +1183,58 @@ class TTSService:
         import subprocess
 
         backend_dir = Path(__file__).resolve().parent
-        project_dir = backend_dir.parent
-        dia2_venv_python = project_dir / ".venv_dia2" / "Scripts" / "python.exe"
+
+        # Prefer the interpreter path provided by the desktop bootstrapper.
+        dia2_python_env = os.getenv("ORATIO_DIA2_PYTHON")
+        if dia2_python_env:
+            dia2_venv_python = Path(dia2_python_env)
+        else:
+            # Dev fallback.
+            project_dir = backend_dir.parent
+            dia2_venv_python = project_dir / ".venv_dia2" / "Scripts" / "python.exe"
+
         if not dia2_venv_python.exists():
             raise RuntimeError(
-                "Dia2 venv not found. Run: cd OratioViva && python -m venv .venv_dia2 && .venv_dia2/Scripts/pip install torch transformers>=4.55.3 safetensors sphn"
+                "Dia2 python not found. Ensure Dia2 venv is installed (desktop should create it automatically)."
+            )
+
+        # Guard against partially-installed Dia2 env (common on first run).
+        # The desktop app installs `.venv_dia2` in the background; we wait a bit if it's still installing.
+        import time
+
+        ready = False
+        last_details = ""
+        for _ in range(36):  # ~3 minutes
+            check = subprocess.run(
+                [
+                    str(dia2_venv_python),
+                    "-c",
+                    "import torch, transformers, safetensors, sphn; print('ok')",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if check.returncode == 0:
+                ready = True
+                break
+
+            last_details = (check.stderr or check.stdout or "").strip()
+            lower = last_details.lower()
+            missing_pkg = "no module named" in lower and any(
+                name in lower
+                for name in ["torch", "transformers", "safetensors", "sphn"]
+            )
+            if missing_pkg:
+                time.sleep(5)
+                continue
+            break
+
+        if not ready:
+            raise RuntimeError(
+                "Dia2 environment is not ready (torch/transformers missing) or setup failed. "
+                "Wait for first-run setup to finish and restart the app. "
+                f"Details: {last_details}"
             )
 
         worker_script = backend_dir / "dia2_worker.py"
@@ -1250,14 +1334,12 @@ class TTSService:
     ) -> float:
         try:
             import numpy as np
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError("Local pipeline requires numpy installed") from exc
 
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Ensure mono
         if audio_array.ndim > 1:
             audio_array = np.mean(audio_array, axis=1)
-        # Normalize to int16
         max_val = np.max(np.abs(audio_array))
         if max_val > 0:
             audio_array = audio_array / max_val
@@ -1280,13 +1362,11 @@ class TTSService:
         new_sample_rate = int(params.framerate * speed)
         with wave.open(str(path), "wb") as wav_out:
             wav_out.setnchannels(params.nchannels)
-            wav_out.setnchannels(params.nchannels)
             wav_out.setsampwidth(params.sampwidth)
             wav_out.setframerate(new_sample_rate)
             wav_out.writeframes(frames)
 
 
-AUDIO_EXTENSIONS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}
 
 
@@ -1329,8 +1409,6 @@ def chunk_audio_files(input_paths: List[Path], output_path: Path) -> Path:
                 if params.nchannels == 2:
                     audio = audio.reshape(-1, 2).mean(axis=1).astype(np.int16)
                 all_audio.append(audio)
-                if params.framerate != sample_rate:
-                    pass
         except Exception as e:
             print(f"Error reading {path}: {e}")
             continue

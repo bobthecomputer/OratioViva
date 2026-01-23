@@ -3,12 +3,23 @@ from __future__ import annotations
 import os
 import ssl
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from huggingface_hub import hf_hub_download, snapshot_download
 from tqdm.auto import tqdm
+
+
+def format_size(size: int) -> str:
+    """Format file size in human readable format."""
+    size_f: float = float(size)
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_f < 1024:
+            return f"{size_f:.1f} {unit}"
+        size_f /= 1024
+    return f"{size_f:.1f} TB"
 
 
 @dataclass
@@ -19,7 +30,10 @@ class DownloadProgress:
     downloaded_bytes: int
     total_bytes: int
     status: str
+    attempt: int = 1
+    max_attempts: int = 3
     message: str = ""
+    error: Optional[str] = None
 
 
 DEFAULT_MODELS: Dict[str, str] = {
@@ -30,6 +44,10 @@ DEFAULT_MODELS: Dict[str, str] = {
     "speecht5_vocoder": "microsoft/speecht5_hifigan",
     "mms": "facebook/mms-tts-eng",
     "dia2": "nari-labs/Dia2-2B",
+    # Download-only (not integrated for synthesis yet)
+    "chroma_4b": "FlashLabs/Chroma-4B",
+    "qwen3_tts": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "qwen3_tokenizer_12hz": "Qwen/Qwen3-TTS-Tokenizer-12Hz",
 }
 EXTRA_MODELS: Dict[str, str] = {
     "xtts": "coqui/XTTS-v2",
@@ -54,6 +72,66 @@ def get_bundled_cert_path() -> Optional[Path]:
     return None
 
 
+def is_retryable_error(err: Exception) -> tuple[bool, str]:
+    """Classify error and determine if it's retryable with reason."""
+    err_str = str(err).lower()
+    err_type = type(err).__name__
+
+    if any(
+        x in err_str
+        for x in [
+            "tls",
+            "ssl",
+            "certificate",
+            "ca certificate",
+            "ssl_cert",
+            "ssl_context",
+        ]
+    ):
+        return True, "ssl_error"
+    if any(
+        x in err_str
+        for x in ["connection", "network", "timeout", "econnreset", "eof", "socket"]
+    ):
+        return True, "network_error"
+    if any(x in err_str for x in ["401", "unauthorized", "auth", "token"]):
+        return False, "auth_error"
+    if any(x in err_str for x in ["403", "forbidden", "access denied"]):
+        return False, "auth_error"
+    if any(x in err_str for x in ["404", "not found"]):
+        return False, "not_found"
+    if any(x in err_str for x in ["429", "rate limit", "too many requests"]):
+        return True, "rate_limit"
+    if any(x in err_str for x in ["disk", "space", "permission", "enospc", "eacces"]):
+        return False, "disk_error"
+    if any(x in err_str for x in ["keyboardinterrupt", "cancelled", "canceled"]):
+        return False, "cancelled"
+    return True, "unknown"
+
+
+def get_fallback_filenames(repo_id: str) -> List[str]:
+    """Get appropriate fallback filenames for a model based on repo_id."""
+    if "dia2" in repo_id.lower():
+        return ["model.safetensors", "model.safetensors.parts.json"]
+    if "kokoro" in repo_id.lower():
+        return ["pytorch_model.bin", "kokoro-v0_19.safetensors", "config.json"]
+    if "bark" in repo_id.lower():
+        return ["pytorch_model.bin", "safety_checker_pytorch_model.bin", "config.json"]
+    if "speecht5" in repo_id.lower():
+        return ["pytorch_model.bin", "speecht5_hifigan_vocoder.pt", "config.json"]
+    if "mms" in repo_id.lower():
+        return ["pytorch_model.bin", "adapter.bin", "config.json"]
+    if "parler" in repo_id.lower():
+        return ["pytorch_model.bin", "model.safetensors", "config.json"]
+    if "xtts" in repo_id.lower():
+        return ["model.pth", "config.json", "XTTS-v2.pt"]
+    if "chroma" in repo_id.lower():
+        return ["model.safetensors.index.json", "model.safetensors", "config.json"]
+    if "qwen" in repo_id.lower() and "tts" in repo_id.lower():
+        return ["model.safetensors.index.json", "model.safetensors", "config.json"]
+    return ["pytorch_model.bin", "model.safetensors", "config.json"]
+
+
 class ModelManager:
     def __init__(
         self,
@@ -76,6 +154,9 @@ class ModelManager:
             default_factory=dict
         )
         self._current_download_model: Optional[str] = None
+        self._cancel_download = False
+        self._last_progress_time: float = 0
+        self._download_start_time: Optional[float] = None
 
     @property
     def downloading(self) -> bool:
@@ -88,6 +169,18 @@ class ModelManager:
     @property
     def current_download_model(self) -> Optional[str]:
         return self._current_download_model
+
+    @property
+    def cancel_download(self) -> bool:
+        return self._cancel_download
+
+    def set_cancel_download(self, cancel: bool = True) -> None:
+        with self._lock:
+            self._cancel_download = cancel
+
+    def reset_cancel_download(self) -> None:
+        with self._lock:
+            self._cancel_download = False
 
     def get_download_progress(self) -> Optional[DownloadProgress]:
         if (
@@ -159,6 +252,9 @@ class ModelManager:
         downloaded: int,
         total: int,
         message: str = "",
+        attempt: int = 1,
+        max_attempts: int = 3,
+        error: Optional[str] = None,
     ) -> None:
         with self._lock:
             if model_id in self._download_progress:
@@ -166,13 +262,37 @@ class ModelManager:
                 self._download_progress[model_id].downloaded_bytes = downloaded
                 self._download_progress[model_id].total_bytes = total
                 self._download_progress[model_id].message = message
+                self._download_progress[model_id].attempt = attempt
+                self._download_progress[model_id].max_attempts = max_attempts
+                self._download_progress[model_id].error = error
+
+    def _check_cancelled(self) -> bool:
+        with self._lock:
+            return self._cancel_download
+
+    def _clear_partial_download(self, target: Path) -> None:
+        """Clear incomplete download to start fresh."""
+        if target.exists():
+            import shutil
+
+            for item in target.rglob("*"):
+                if item.is_file():
+                    try:
+                        item.unlink()
+                    except OSError:
+                        pass
+            try:
+                target.rmdir()
+            except OSError:
+                pass
 
     def _try_download_with_fallback(
         self,
         repo_id: str,
         target: Path,
-        progress_hook,
+        model_id: str,
     ) -> None:
+        max_attempts = 3
         bundled_cert = get_bundled_cert_path()
 
         if bundled_cert:
@@ -181,61 +301,208 @@ class ModelManager:
             os.environ["REQUESTS_CA_BUNDLE"] = str(bundled_cert)
             os.environ["CURL_CA_BUNDLE"] = str(bundled_cert)
 
-        try:
-            snapshot_download(
-                repo_id=repo_id,
-                local_dir=target,
-                local_dir_use_symlinks=False,
-                token=self.token,
-                progress_hook=progress_hook,
+        for attempt in range(1, max_attempts + 1):
+            if self._check_cancelled():
+                raise Exception("Download cancelled by user")
+
+            self._update_progress(
+                model_id,
+                repo_id,
+                0.05,
+                0,
+                0,
+                f"Starting download... (attempt {attempt}/{max_attempts})",
+                attempt,
+                max_attempts,
             )
-        except Exception as tls_err:
-            err_str = str(tls_err).lower()
-            if any(
-                x in err_str for x in ["tls", "ssl", "certificate", "ca certificate"]
-            ):
-                print(f"TLS/SSL error, retrying without verification: {tls_err}")
-                self._update_progress(
-                    repo_id.split("/")[-1]
-                    .lower()
-                    .replace("2b", "")
-                    .replace("dia", "dia2"),
-                    repo_id,
-                    0.1,
-                    0,
-                    0,
-                    "Retrying without SSL verification...",
-                )
-                os.environ.pop("SSL_CERT_FILE", None)
-                os.environ.pop("REQUESTS_CA_BUNDLE", None)
-                os.environ.pop("CURL_CA_BUNDLE", None)
+
+            # Start download in a thread so we can monitor progress
+            import threading
+
+            download_result = {"error": None, "done": False}
+
+            def do_download():
                 try:
                     snapshot_download(
                         repo_id=repo_id,
                         local_dir=target,
                         local_dir_use_symlinks=False,
                         token=self.token,
-                        progress_hook=progress_hook,
-                        ignore_patterns=["*.safetensors*"],
+                        resume_download=True,
                     )
-                    print("Download completed with fallback (ignore_patterns)")
-                    return
-                except Exception as e2:
-                    print(f"Fallback also failed: {e2}")
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
-                    hf_hub_download(
-                        repo_id=repo_id,
-                        filename="pytorch_model.bin",
-                        local_dir=target,
-                        token=self.token,
-                        local_dir_use_symlinks=False,
-                        ssl_context=ssl_context,
-                    )
-                    print("Download completed with SSL_CERT_NONE fallback")
+                    download_result["done"] = True
+                except Exception as e:
+                    download_result["error"] = e
+
+            download_thread = threading.Thread(target=do_download, daemon=True)
+            download_thread.start()
+
+            # Rough estimate used only for progress UI.
+            lower_repo = repo_id.lower()
+            if "dia2" in lower_repo:
+                estimated_total = 7_800_000_000
+            elif "chroma" in lower_repo:
+                estimated_total = 9_500_000_000
+            elif "qwen" in lower_repo and "tts" in lower_repo:
+                estimated_total = 4_500_000_000
             else:
-                raise
+                estimated_total = 2_000_000_000
+
+            # Monitor progress by checking file sizes
+            last_progress_time = time.time()
+            last_size = 0
+            stall_counter = 0
+
+            while not download_result["done"] and not download_result["error"]:
+                if self._check_cancelled():
+                    raise Exception("Download cancelled by user")
+
+                # Calculate current download size from incomplete files and target directory
+                current_size = 0
+                incomplete_size = 0
+                for f in target.rglob("*"):
+                    if f.is_file() and f.stat().st_size > 0:
+                        size = f.stat().st_size
+                        current_size += size
+                        if f.name.endswith(".incomplete"):
+                            incomplete_size = size
+
+                # Estimate progress (Dia2 model.safetensors is ~4.5GB)
+                progress = (
+                    min(0.95, current_size / estimated_total)
+                    if current_size > 0
+                    else 0.05
+                )
+
+                # Update progress every 2 seconds or when size changes significantly
+                size_changed = abs(current_size - last_size) > (
+                    1024 * 1024
+                )  # 1MB change
+                time_passed = time.time() - last_progress_time > 2.0
+
+                if size_changed or time_passed:
+                    status_msg = f"Downloading... {format_size(current_size)}"
+                    if incomplete_size > 0:
+                        status_msg += f" (incomplete: {format_size(incomplete_size)})"
+
+                    self._update_progress(
+                        model_id,
+                        repo_id,
+                        progress,
+                        current_size,
+                        estimated_total,
+                        status_msg,
+                        attempt,
+                        max_attempts,
+                    )
+                    last_size = current_size
+                    last_progress_time = time.time()
+
+                    # Detect stall - if no progress for 30 seconds
+                    if not size_changed and time_passed:
+                        stall_counter += 1
+                        if stall_counter > 15:  # 30+ seconds of no progress
+                            print(
+                                f"Download appears stalled at {format_size(current_size)}"
+                            )
+                            stall_counter = 0
+
+                download_thread.join(timeout=1.0)
+                if download_thread.is_alive():
+                    continue
+                break
+
+            if download_result["error"]:
+                if self._check_cancelled():
+                    raise Exception("Download cancelled by user")
+
+                e = download_result["error"]
+                retryable, error_type = is_retryable_error(e)
+                error_msg = str(e)
+
+                print(
+                    f"Attempt {attempt}/{max_attempts} failed: {error_type} - {error_msg[:200]}"
+                )
+
+                if not retryable or attempt == max_attempts:
+                    raise
+
+                if error_type == "ssl_error":
+                    os.environ.pop("SSL_CERT_FILE", None)
+                    os.environ.pop("REQUESTS_CA_BUNDLE", None)
+                    os.environ.pop("CURL_CA_BUNDLE", None)
+                    self._update_progress(
+                        model_id,
+                        repo_id,
+                        0.05,
+                        0,
+                        0,
+                        f"Retrying without SSL verification...",
+                        attempt + 1,
+                        max_attempts,
+                        error_type,
+                    )
+                    time.sleep(2**attempt)
+                    continue
+
+                if error_type == "network_error":
+                    self._update_progress(
+                        model_id,
+                        repo_id,
+                        0.05,
+                        0,
+                        0,
+                        f"Network error, retrying in {2**attempt}s...",
+                        attempt + 1,
+                        max_attempts,
+                        error_type,
+                    )
+                    time.sleep(2**attempt)
+                    continue
+
+                if error_type == "rate_limit":
+                    wait_time = 10 * (2 ** (attempt - 1))
+                    self._update_progress(
+                        model_id,
+                        repo_id,
+                        0.05,
+                        0,
+                        0,
+                        f"Rate limited, waiting {wait_time}s...",
+                        attempt + 1,
+                        max_attempts,
+                        error_type,
+                    )
+                    time.sleep(wait_time)
+                    continue
+
+                time.sleep(2**attempt)
+                continue
+
+            # Download succeeded
+            print(f"Download completed successfully: {repo_id}")
+            self._update_progress(
+                model_id,
+                repo_id,
+                1.0,
+                0,
+                0,
+                "Download complete!",
+                attempt,
+                max_attempts,
+            )
+            return
+
+        raise Exception(f"Download failed after {max_attempts} attempts")
+
+    def cancel_current_download(self) -> None:
+        with self._lock:
+            self._cancel_download = True
+
+    def clear_download_state(self) -> None:
+        with self._lock:
+            self._cancel_download = False
+            self._download_error = None
 
     def download(self, models: Optional[Iterable[str]] = None) -> List[ModelStatus]:
         with self._lock:
@@ -260,6 +527,7 @@ class ModelManager:
 
                 self._current_download_model = model_id
                 target = self.models_dir / repo_id.replace("/", "_")
+                self.reset_cancel_download()
 
                 self._download_progress[model_id] = DownloadProgress(
                     model_id=model_id,
@@ -271,21 +539,11 @@ class ModelManager:
                     message=f"Downloading {model_id}...",
                 )
 
-                def progress_hook(progress):
-                    self._update_progress(
-                        model_id,
-                        repo_id,
-                        progress.fraction,
-                        progress.downloaded,
-                        progress.total,
-                        f"Downloading... {progress.fraction * 100:.1f}%",
-                    )
-
                 self._update_progress(
-                    model_id, repo_id, 0.1, 0, 0, f"Starting download of {model_id}..."
+                    model_id, repo_id, 0.05, 0, 0, f"Starting download of {model_id}..."
                 )
 
-                self._try_download_with_fallback(repo_id, target, progress_hook)
+                self._try_download_with_fallback(repo_id, target, model_id)
 
                 self._download_progress[model_id] = DownloadProgress(
                     model_id=model_id,
@@ -298,6 +556,7 @@ class ModelManager:
                 )
 
             self._current_download_model = None
+            self.reset_cancel_download()
             return self.status()
         except Exception as exc:
             self._download_error = str(exc)
@@ -307,6 +566,7 @@ class ModelManager:
             ):
                 self._download_progress[self._current_download_model].status = "error"
                 self._download_progress[self._current_download_model].message = str(exc)
+            self.reset_cancel_download()
             raise
         finally:
             with self._lock:

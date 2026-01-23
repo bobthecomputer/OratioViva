@@ -97,6 +97,23 @@ export async function downloadModels(models) {
   });
 }
 
+export async function cancelDownload() {
+  const base = await resolveApiBase();
+  const resp = await fetch(`${base}/models/download/cancel`, { method: "POST" });
+  if (!resp.ok) {
+    const detail = await resp.text();
+    throw new Error(detail || "Cancel failed");
+  }
+  return resp.json();
+}
+
+export async function deleteDownloadedModel(models) {
+  return jsonFetch("/models/download", {
+    method: "DELETE",
+    body: JSON.stringify({ models: Array.isArray(models) ? models : [models] }),
+  });
+}
+
 export async function fetchAnalytics() {
   return jsonFetch("/analytics");
 }

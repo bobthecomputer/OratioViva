@@ -58,20 +58,32 @@ BASE_DIR = resolve_base_dir()
 MODELS_DIR = resolve_models_dir()
 OUTPUT_DIR = resolve_outputs_dir()
 LOGS_DIR = resolve_logs_dir()
+
+# If desktop bootstrapper provides a CA bundle, apply it for all outbound HTTPS
+# (huggingface_hub/requests, worker subprocesses inherit env).
+_ca_bundle = os.getenv("ORATIO_CA_BUNDLE")
+if _ca_bundle and Path(_ca_bundle).exists():
+    os.environ.setdefault("SSL_CERT_FILE", _ca_bundle)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_bundle)
+    os.environ.setdefault("CURL_CA_BUNDLE", _ca_bundle)
 AUDIO_DIR = OUTPUT_DIR / "audio"
 HISTORY_PATH = OUTPUT_DIR / "history.json"
 JOBS_PATH = OUTPUT_DIR / "jobs.json"
 
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+# Stub mode should be an explicit user choice.
 USE_STUB = os.getenv("ORATIO_TTS_STUB", "0") == "1"
 MAX_JOBS = int(os.getenv("ORATIO_JOBS_MAX", "300"))
 TTS_PROVIDER = os.getenv(
-    "ORATIO_TTS_PROVIDER", "local"
+    "ORATIO_TTS_PROVIDER", "auto"
 )  # auto | inference | local | stub
 MODELS_DIR_ENV = os.getenv("ORATIO_MODELS_DIR")
 OPTIONAL_MODELS = {
     m.strip().lower()
-    for m in os.getenv("ORATIO_OPTIONAL_MODELS", "kokoro").split(",")
+    for m in os.getenv(
+        "ORATIO_OPTIONAL_MODELS",
+        "kokoro,chroma_4b,qwen3_tts,qwen3_tokenizer_12hz",
+    ).split(",")
     if m.strip()
 }
 
@@ -210,7 +222,7 @@ def collect_audio_files(job_ids: List[str]) -> List[Path]:
     return selected
 
 
-app = FastAPI(title="OratioViva API", version="0.3.0")
+app = FastAPI(title="OratioViva API", version="0.6.6")
 
 app.add_middleware(
     CORSMiddleware,
@@ -231,7 +243,6 @@ model_manager = ModelManager(
 tts_service = TTSService(
     audio_dir=AUDIO_DIR,
     base_audio_url="/audio",
-    hf_token=HF_TOKEN,
     use_stub=USE_STUB or TTS_PROVIDER == "stub",
     fallback_stub=False,
     provider=TTS_PROVIDER,
@@ -243,12 +254,6 @@ run_from_env(AUDIO_DIR, HISTORY_PATH)
 
 job_store.clear()
 write_history([])
-
-OLD_OUTPUTS = Path(__file__).resolve().parent.parent.parent / "OratioViva" / "outputs"
-if OLD_OUTPUTS.exists():
-    import shutil
-
-    shutil.rmtree(OLD_OUTPUTS)
 
 app.mount("/audio", StaticFiles(directory=AUDIO_DIR), name="audio")
 
@@ -318,6 +323,35 @@ def models_download(body: ModelDownloadRequest, background_tasks: BackgroundTask
 
     background_tasks.add_task(_download)
     return {"status": "started"}
+
+
+@app.post("/models/download/cancel")
+def models_download_cancel():
+    model_manager.cancel_current_download()
+    return {"status": "cancelled"}
+
+
+@app.delete("/models/download")
+def models_download_delete(body: ModelDownloadRequest):
+    """Delete a partially or fully downloaded model to allow re-download."""
+    from backend.models import MODEL_ALIASES
+
+    deleted = []
+    if body.models:
+        for model_key in body.models:
+            repo_id = MODEL_ALIASES.get(model_key, model_key)
+            model_dir = MODELS_DIR / repo_id.replace("/", "_")
+            if model_dir.exists():
+                import shutil
+
+                try:
+                    shutil.rmtree(model_dir)
+                    deleted.append(model_key)
+                except Exception as e:
+                    return {"status": "error", "message": str(e)}
+            else:
+                deleted.append(f"{model_key} (not found)")
+    return {"status": "deleted", "models": deleted}
 
 
 @app.get("/analytics")

@@ -1,0 +1,11 @@
+# Dia2 venv requirements (installed into `.venv_dia2` by the desktop bootstrapper)
+
+# Keep the Dia2 venv compatible with the existing venv health checks.
+-r requirements.txt
+
+# Dia2 runtime deps.
+torch>=2.3
+transformers>=4.55.3
+safetensors>=0.4
+sphn
+soundfile

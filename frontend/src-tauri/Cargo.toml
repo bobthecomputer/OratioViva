@@ -1,6 +1,6 @@
 [package]
 name = "oratioviva"
-version = "0.1.0"
+version = "0.6.6"
 description = "OratioViva desktop (Tauri)"
 authors = ["OratioViva"]
 edition = "2021"

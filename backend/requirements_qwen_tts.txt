@@ -1,0 +1,5 @@
+# Optional deps to enable Qwen3-TTS usage in the heavy venv.
+# Installed lazily on first use.
+
+qwen-tts
+librosa

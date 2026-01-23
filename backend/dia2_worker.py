@@ -43,7 +43,8 @@ def main():
         dia = Dia2.from_local(
             config_path=f"{model_path}/config.json",
             weights_path=f"{model_path}/model.safetensors",
-            tokenizer_id="nari-labs/Dia2-2B",
+            # Use local tokenizer files from the downloaded model folder.
+            tokenizer_id=model_path,
             device=device,
             dtype=dtype,
         )
