@@ -12,6 +12,20 @@
     "settings": "Paramètres",
     "help": "Aide"
   },
+  "settings": {
+    "title": "Paramètres",
+    "voiceBrowseTitle": "Affichage des voix",
+    "voiceBrowseDescription": "Choisissez comment organiser les voix lors de la sélection.",
+    "voiceBrowseModel": "Vue par modèle",
+    "voiceBrowseLanguage": "Vue par langue",
+    "performanceTitle": "Performance",
+    "performanceDescription": "Ajustez les estimations selon votre matériel.",
+    "performanceProfile": "Profil matériel",
+    "readingSpeed": "Vitesse de lecture : {wpm} mpm",
+    "modelsTitle": "Modèles",
+    "modelsDescription": "Gérez les téléchargements et l'espace disque des modèles locaux.",
+    "openModels": "Ouvrir le gestionnaire"
+  },
   "hero": {
     "eyebrow": "OratioViva Studio",
     "headline": "Transformez votre contenu en audio clair.",
@@ -45,9 +59,12 @@
     "deselectAll": "Effacer",
     "downloadSelected": "Télécharger {count} modèle(s)",
     "downloadingSelected": "Téléchargement de {count} modèles...",
+    "download": "Télécharger",
     "installed": "Installé",
     "notInstalled": "Non installé",
     "downloading": "Téléchargement...",
+    "downloadToUnlock": "Télécharger pour débloquer {count} presets.",
+    "missingModels": "Modèles manquants",
     "installBtn": "Installer",
     "downloadingBtn": "Téléchargement...",
     "close": "Fermer",
@@ -95,7 +112,18 @@
     "metrics": "Métriques",
     "historyItems": "Éléments d'historique",
     "jobsStored": "Jobs stockés",
-    "audioDuration": "Durée audio (historique)"
+    "audioDuration": "Durée audio (historique)",
+    "estimatedAudio": "Durée audio estimée",
+    "estimatedGeneration": "Temps de génération estimé",
+    "estimationProfile": "Profil d'estimation",
+    "avgRealtime": "Facteur temps réel moyen",
+    "readingSpeed": "Vitesse de lecture : {wpm} mpm",
+    "words": "mots",
+    "refresh": "Rafraîchir",
+    "loading": "Chargement des analytics...",
+    "estimator": "Estimateur",
+    "modelBased": "Basé sur le modèle",
+    "globalBased": "Moyenne globale"
   },
   "loading": {
     "title": "OratioViva",

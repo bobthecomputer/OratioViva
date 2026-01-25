@@ -4,11 +4,12 @@ import io
 import json
 import os
 import sys
+import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,6 +75,8 @@ HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 # Stub mode should be an explicit user choice.
 USE_STUB = os.getenv("ORATIO_TTS_STUB", "0") == "1"
 MAX_JOBS = int(os.getenv("ORATIO_JOBS_MAX", "300"))
+MAX_TEXT_LENGTH = int(os.getenv("ORATIO_TEXT_MAX", "20000"))
+MAX_LONG_TEXT_LENGTH = int(os.getenv("ORATIO_LONG_TEXT_MAX", "200000"))
 TTS_PROVIDER = os.getenv(
     "ORATIO_TTS_PROVIDER", "auto"
 )  # auto | inference | local | stub
@@ -115,7 +118,7 @@ else:
 
 
 class SynthesisRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=6000)
+    text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     voice_id: str = Field("parler_en_neutral")
     speed: float = Field(1.0, ge=0.5, le=2.0)
     style: Optional[str] = Field(
@@ -133,6 +136,7 @@ class JobStatusResponse(BaseModel):
     status: str
     audio_url: Optional[str] = None
     duration_seconds: Optional[float] = None
+    generation_seconds: Optional[float] = None
     created_at: datetime
     updated_at: datetime
     model: Optional[str] = None
@@ -360,6 +364,24 @@ def analytics():
     history = load_history()
     jobs = job_store.list(limit=100)
     audio_duration = sum((item.get("duration_seconds") or 0) for item in history)
+    rtf_values = []
+    rtf_by_model: Dict[str, List[float]] = {}
+    for item in history:
+        gen = item.get("generation_seconds")
+        dur = item.get("duration_seconds")
+        model = item.get("model") or "unknown"
+        if not gen or not dur:
+            continue
+        if dur <= 0:
+            continue
+        rtf = gen / dur
+        rtf_values.append(rtf)
+        rtf_by_model.setdefault(model, []).append(rtf)
+
+    avg_rtf = sum(rtf_values) / len(rtf_values) if rtf_values else None
+    avg_rtf_by_model = {
+        key: (sum(values) / len(values)) for key, values in rtf_by_model.items()
+    }
     return {
         "provider": tts_service.current_provider(),
         "provider_message": tts_service.provider_message(statuses),
@@ -380,12 +402,18 @@ def analytics():
             "jobs": len(jobs),
             "audio_duration_seconds": audio_duration,
         },
+        "rtf": {
+            "average": avg_rtf,
+            "by_model": avg_rtf_by_model,
+        },
         "jobs_recent": [j for j in jobs[:5]],
         "history_recent": history[:5],
     }
 
 
-def _record_history(result, text: str) -> None:
+def _record_history(
+    result, text: str, generation_seconds: Optional[float] = None
+) -> None:
     entry = {
         "job_id": result.job_id,
         "text_preview": text[:160],
@@ -397,6 +425,10 @@ def _record_history(result, text: str) -> None:
         "created_at": result.created_at.isoformat(),
         "source": result.source,
     }
+    if generation_seconds is not None:
+        entry["generation_seconds"] = generation_seconds
+        if result.duration_seconds:
+            entry["realtime_factor"] = generation_seconds / result.duration_seconds
     append_history(entry)
 
 
@@ -422,6 +454,7 @@ def _run_job(
 
     job_store.update(job_id, status="running")
     try:
+        start_time = time.perf_counter()
         result = tts_service.synthesize(
             text=text,
             voice_id=voice_id,
@@ -430,12 +463,14 @@ def _run_job(
             voice_ref=voice_ref,
             job_id=job_id,
         )
-        _record_history(result, text)
+        generation_seconds = time.perf_counter() - start_time
+        _record_history(result, text, generation_seconds=generation_seconds)
         status = job_store.update(
             job_id,
             status="succeeded",
             audio_url=result.audio_url,
             duration_seconds=result.duration_seconds,
+            generation_seconds=generation_seconds,
             model=result.model,
             voice_id=result.voice_id,
             source=result.source,
@@ -454,6 +489,11 @@ def synthesize(
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="Text payload cannot be empty.")
+    if len(text) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=413,
+            detail="Long text exceeds maximum allowed length.",
+        )
 
     if request.voice_ref and request.voice_ref.strip():
         ext = Path(request.voice_ref).suffix.lower()
@@ -574,7 +614,7 @@ class LongAudioRequest(BaseModel):
     speed: float = Field(1.0, ge=0.5, le=2.0)
     style: Optional[str] = Field(None)
     voice_ref: Optional[str] = Field(None)
-    chunk_size: int = Field(2000, ge=500, le=5000)
+    chunk_size: int = Field(2000, ge=500, le=12000)
     parallel: bool = Field(False)
 
 
@@ -664,11 +704,18 @@ def _run_long_job(
 
     job_store.update(job_id, status="running")
     try:
+        start_time = time.perf_counter()
         chunks = _split_text_into_chunks(text, chunk_size)
         total_chunks = len(chunks)
 
         if total_chunks == 1:
             return _run_job(job_id, text, voice_id, speed, style, voice_ref)
+
+        from backend.tts import VOICE_BY_ID
+
+        voice = VOICE_BY_ID.get(voice_id)
+        model_id = (voice.model or "").lower() if voice else ""
+        is_qwen = "qwen3-tts" in model_id
 
         chunk_job_ids = []
         for i, chunk in enumerate(chunks):
@@ -687,7 +734,31 @@ def _run_long_job(
             source=f"Processing {total_chunks} chunks ({'parallel' if parallel else 'sequential'})",
         )
 
-        if parallel:
+        if is_qwen:
+            try:
+                results = tts_service.synthesize_qwen3_customvoice_batch(
+                    chunks=chunks,
+                    voice_id=voice_id,
+                    job_ids=chunk_job_ids,
+                    speed=speed,
+                    style=style,
+                )
+                for idx, result in enumerate(results):
+                    job_store.update(
+                        chunk_job_ids[idx],
+                        status="succeeded",
+                        audio_url=result.audio_url,
+                        duration_seconds=result.duration_seconds,
+                        model=result.model,
+                        voice_id=result.voice_id,
+                        source=f"chunk {idx + 1}/{total_chunks}",
+                    )
+                valid_results = results
+            except Exception as exc:
+                for cid in chunk_job_ids:
+                    job_store.update(cid, status="failed", error=str(exc))
+                return job_store.update(job_id, status="failed", error=str(exc))
+        elif parallel:
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
@@ -717,7 +788,8 @@ def _run_long_job(
                     job_store.update(cid, status="failed", error=str(exc))
                     return None
 
-            with ThreadPoolExecutor(max_workers=4) as executor:
+            max_workers = max(1, int(os.getenv("ORATIO_LONG_PARALLEL_WORKERS", "4")))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 results = list(executor.map(process_chunk, range(total_chunks)))
 
             valid_results = [r for r in results if r is not None]
@@ -749,7 +821,13 @@ def _run_long_job(
                     job_store.update(cid, status="failed", error=str(exc))
 
         if not valid_results:
-            return job_store.update(job_id, status="failed", error="All chunks failed")
+            generation_seconds = time.perf_counter() - start_time
+            return job_store.update(
+                job_id,
+                status="failed",
+                error="All chunks failed",
+                generation_seconds=generation_seconds,
+            )
 
         audio_paths = [r.audio_path for r in valid_results if r.audio_path]
         if len(audio_paths) == 1:
@@ -772,23 +850,39 @@ def _run_long_job(
                 voice_id=voice_id,
                 source=f"combined {len(valid_results)} chunks",
             )
-            _record_history(combined_result, f"[{len(chunks)} chunks] {text[:160]}...")
+            generation_seconds = time.perf_counter() - start_time
+            _record_history(
+                combined_result,
+                f"[{len(chunks)} chunks] {text[:160]}...",
+                generation_seconds=generation_seconds,
+            )
             return job_store.update(
                 job_id,
                 status="succeeded",
                 audio_url=combined_result.audio_url,
                 duration_seconds=combined_result.duration_seconds,
+                generation_seconds=generation_seconds,
                 model=combined_result.model,
                 voice_id=voice_id,
                 source=f"combined {len(valid_results)}/{total_chunks} chunks",
             )
         else:
+            generation_seconds = time.perf_counter() - start_time
             return job_store.update(
-                job_id, status="failed", error="Failed to combine chunks"
+                job_id,
+                status="failed",
+                error="Failed to combine chunks",
+                generation_seconds=generation_seconds,
             )
 
     except Exception as exc:
-        return job_store.update(job_id, status="failed", error=str(exc))
+        generation_seconds = time.perf_counter() - start_time
+        return job_store.update(
+            job_id,
+            status="failed",
+            error=str(exc),
+            generation_seconds=generation_seconds,
+        )
 
 
 if __name__ == "__main__":

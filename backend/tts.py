@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import math
 import struct
 import uuid
@@ -9,7 +10,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from backend.models import ModelManager
@@ -78,6 +79,70 @@ ALL_VOICE_PRESETS = [
         label="Qwen3 CustomVoice (Ryan)",
         voice="Ryan",
         description="Qwen3-TTS CustomVoice (English male). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_es",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="es",
+        label="Qwen3 CustomVoice (Ryan ES)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (Spanish). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_fr",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="fr",
+        label="Qwen3 CustomVoice (Ryan FR)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (French). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_de",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="de",
+        label="Qwen3 CustomVoice (Ryan DE)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (German). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_it",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="it",
+        label="Qwen3 CustomVoice (Ryan IT)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (Italian). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_pt",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="pt",
+        label="Qwen3 CustomVoice (Ryan PT)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (Portuguese). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_ru",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="ru",
+        label="Qwen3 CustomVoice (Ryan RU)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (Russian). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_ja",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="ja",
+        label="Qwen3 CustomVoice (Ryan JA)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (Japanese). Style via 'Style' field.",
+    ),
+    VoicePreset(
+        id="qwen3_custom_ryan_ko",
+        model="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        language="ko",
+        label="Qwen3 CustomVoice (Ryan KO)",
+        voice="Ryan",
+        description="Qwen3-TTS CustomVoice (Korean). Style via 'Style' field.",
     ),
     VoicePreset(
         id="qwen3_custom_aiden_en",
@@ -533,10 +598,7 @@ class TTSService:
             err = result.stderr or result.stdout or "Unknown error"
             raise RuntimeError(f"Qwen3-TTS worker failed: {err}")
 
-        try:
-            output = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            raise RuntimeError(f"Invalid JSON from Qwen3 worker: {result.stdout}")
+        output = self._parse_worker_json(result.stdout, "Qwen3")
         if not output.get("success"):
             raise RuntimeError(output.get("error") or "Qwen3-TTS generation failed")
 
@@ -555,6 +617,179 @@ class TTSService:
             model=voice.model,
             voice_id=voice.id,
             source="local",
+        )
+
+    @staticmethod
+    def _parse_worker_json(raw: str, context: str) -> dict:
+        raw = (raw or "").strip()
+        if not raw:
+            raise RuntimeError(f"{context} worker returned empty output.")
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        for line in reversed(lines):
+            if not (line.startswith("{") and line.endswith("}")):
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = raw[start : end + 1]
+            try:
+                return json.loads(snippet)
+            except json.JSONDecodeError:
+                pass
+
+        raise RuntimeError(
+            f"Invalid JSON from {context} worker: {raw[:500]}".strip()
+        )
+
+    def _synthesize_qwen3_customvoice_batch(
+        self,
+        *,
+        chunks: List[str],
+        voice: VoicePreset,
+        job_ids: List[str],
+        speed: float,
+        style: Optional[str],
+        created_at: datetime,
+    ) -> List[AudioResult]:
+        import json
+        import os
+        import subprocess
+        import tempfile
+
+        if len(chunks) != len(job_ids):
+            raise ValueError("Chunks/job_ids length mismatch.")
+
+        python_exe = self._heavy_python()
+        if not python_exe.exists():
+            raise RuntimeError(
+                "Heavy python env not found. Restart the app to let it set up the heavy environment."
+            )
+
+        self._ensure_qwen_tts_deps(python_exe)
+
+        backend_dir = Path(__file__).resolve().parent
+        worker_script = backend_dir / "qwen_tts_worker.py"
+        if not worker_script.exists():
+            raise RuntimeError("qwen_tts_worker.py not found")
+
+        model_path = self._resolve_model_path(voice.model)
+        output_paths = [self.audio_dir / f"{job_id}.wav" for job_id in job_ids]
+
+        speaker = voice.voice or "Ryan"
+        lang_map = {
+            "en": "English",
+            "zh": "Chinese",
+            "ja": "Japanese",
+            "ko": "Korean",
+            "de": "German",
+            "fr": "French",
+            "ru": "Russian",
+            "pt": "Portuguese",
+            "es": "Spanish",
+            "it": "Italian",
+        }
+        language = lang_map.get((voice.language or "").lower(), "Auto")
+        instruct = style or ""
+
+        payload = {
+            "model_path": model_path,
+            "chunks": chunks,
+            "output_paths": [str(p) for p in output_paths],
+            "language": language,
+            "speaker": speaker,
+            "instruct": instruct,
+        }
+
+        fd, payload_path = tempfile.mkstemp(prefix="qwen_batch_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+
+            timeout = int(os.getenv("ORATIO_QWEN_BATCH_TIMEOUT", "1800"))
+            cmd = [
+                str(python_exe),
+                str(worker_script),
+                "--batch",
+                str(payload_path),
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                err = result.stderr or result.stdout or "Unknown error"
+                raise RuntimeError(f"Qwen3-TTS batch failed: {err}")
+
+            output = self._parse_worker_json(result.stdout, "Qwen3 batch")
+            if not output.get("success"):
+                raise RuntimeError(output.get("error") or "Qwen3-TTS batch failed")
+
+            results = output.get("results") or []
+            if len(results) != len(output_paths):
+                raise RuntimeError("Qwen3-TTS batch returned unexpected results")
+
+            audio_results: List[AudioResult] = []
+            for idx, info in enumerate(results):
+                out_path = Path(info.get("output_path") or output_paths[idx])
+                duration = float(info.get("duration") or 0.0)
+                if speed != 1.0 and out_path.exists():
+                    self._apply_speed_to_wav(out_path, speed)
+                    if duration:
+                        duration = duration / speed
+                audio_results.append(
+                    AudioResult(
+                        job_id=job_ids[idx],
+                        audio_path=out_path,
+                        audio_url=f"{self.base_audio_url}/{out_path.name}",
+                        duration_seconds=duration,
+                        created_at=created_at,
+                        model=voice.model,
+                        voice_id=voice.id,
+                        source="local",
+                    )
+                )
+            return audio_results
+        finally:
+            try:
+                os.unlink(payload_path)
+            except OSError:
+                pass
+
+    def synthesize_qwen3_customvoice_batch(
+        self,
+        *,
+        chunks: List[str],
+        voice_id: str,
+        job_ids: List[str],
+        speed: float = 1.0,
+        style: Optional[str] = None,
+    ) -> List[AudioResult]:
+        if voice_id not in VOICE_BY_ID:
+            raise ValueError(f"Unknown voice_id: {voice_id}")
+        voice = VOICE_BY_ID[voice_id]
+        if "qwen3-tts" not in (voice.model or "").lower():
+            raise ValueError("Batch Qwen synthesis requested for non-Qwen voice.")
+        created_at = datetime.now(timezone.utc)
+        return self._synthesize_qwen3_customvoice_batch(
+            chunks=chunks,
+            voice=voice,
+            job_ids=job_ids,
+            speed=speed,
+            style=style,
+            created_at=created_at,
         )
 
     def _synthesize_chroma_local(

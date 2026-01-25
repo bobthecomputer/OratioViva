@@ -1,6 +1,6 @@
 {
   "name": "oratioviva-frontend",
-  "version": "0.6.6",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {

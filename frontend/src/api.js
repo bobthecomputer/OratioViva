@@ -1,3 +1,5 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
+
 const DEFAULT_API_BASE =
   import.meta.env.VITE_API_BASE ||
   (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
@@ -18,10 +20,18 @@ export function getApiBase() {
 
 export async function resolveApiBase() {
   let base = apiBaseCache || DEFAULT_API_BASE;
-  if (typeof window !== "undefined" && window.__TAURI__?.invoke) {
+
+  // Prefer Tauri IPC when running inside the desktop app.
+  // In Tauri v2 `window.__TAURI__` is only available when `app.withGlobalTauri` is enabled.
+  if (typeof window !== "undefined") {
     try {
-      const tauriBase = await window.__TAURI__.invoke("get_api_base");
-      if (tauriBase) base = tauriBase;
+      if (window.__TAURI__?.invoke) {
+        const tauriBase = await window.__TAURI__.invoke("get_api_base");
+        if (tauriBase) base = tauriBase;
+      } else if (isTauri()) {
+        const tauriBase = await invoke("get_api_base");
+        if (tauriBase) base = tauriBase;
+      }
     } catch {
       // fallback to cached/default base
     }

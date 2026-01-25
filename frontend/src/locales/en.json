@@ -13,6 +13,20 @@
     "help": "Help",
     "models": "Models"
   },
+  "settings": {
+    "title": "Settings",
+    "voiceBrowseTitle": "Voice browser view",
+    "voiceBrowseDescription": "Choose how voices are organized when selecting presets.",
+    "voiceBrowseModel": "Model view",
+    "voiceBrowseLanguage": "Language view",
+    "performanceTitle": "Performance",
+    "performanceDescription": "Tune estimations based on your hardware.",
+    "performanceProfile": "Hardware profile",
+    "readingSpeed": "Reading speed: {wpm} wpm",
+    "modelsTitle": "Models",
+    "modelsDescription": "Manage downloads and disk usage for local models.",
+    "openModels": "Open model manager"
+  },
   "hero": {
     "eyebrow": "OratioViva Studio",
     "headline": "Turn your content into clear audio.",
@@ -46,9 +60,12 @@
     "deselectAll": "Clear",
     "downloadSelected": "Download {count} Model(s)",
     "downloadingSelected": "Downloading {count} models...",
+    "download": "Download",
     "installed": "Installed",
     "notInstalled": "Not installed",
     "downloading": "Downloading...",
+    "downloadToUnlock": "Download to unlock {count} presets.",
+    "missingModels": "Missing models",
     "installBtn": "Install",
     "downloadingBtn": "Downloading...",
     "close": "Close",
@@ -88,6 +105,26 @@
         "default": false
       }
     }
+  },
+  "analytics": {
+    "title": "Analytics",
+    "runtime": "Runtime",
+    "activity": "Activity",
+    "metrics": "Metrics",
+    "historyItems": "History items",
+    "jobsStored": "Jobs stored",
+    "audioDuration": "Audio duration (history)",
+    "estimatedAudio": "Estimated audio duration",
+    "estimatedGeneration": "Estimated generation time",
+    "estimationProfile": "Estimation profile",
+    "avgRealtime": "Average realtime factor",
+    "readingSpeed": "Reading speed: {wpm} wpm",
+    "words": "words",
+    "refresh": "Refresh",
+    "loading": "Loading analytics...",
+    "estimator": "Estimator",
+    "modelBased": "Model-based",
+    "globalBased": "Global average"
   },
   "history": {
     "title": "History",

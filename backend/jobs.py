@@ -16,6 +16,7 @@ class JobStatus:
     updated_at: datetime
     audio_url: Optional[str] = None
     duration_seconds: Optional[float] = None
+    generation_seconds: Optional[float] = None
     model: Optional[str] = None
     voice_id: Optional[str] = None
     source: Optional[str] = None
@@ -125,6 +126,7 @@ class JobStore:
                 updated_at=updated,
                 audio_url=data.get("audio_url"),
                 duration_seconds=data.get("duration_seconds"),
+                generation_seconds=data.get("generation_seconds"),
                 model=data.get("model"),
                 voice_id=data.get("voice_id"),
                 source=data.get("source"),

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   createSynthesis,
@@ -11,6 +11,7 @@ import {
   cancelDownload,
   deleteDownloadedModel,
   exportZip,
+  fetchAnalytics,
   fetchHistory,
   fetchJob,
   fetchJobs,
@@ -25,6 +26,48 @@ const POLL_INTERVAL_MS = 1000;
 const MODEL_POLL_MS = 800;
 const JOBS_POLL_MS = 1500;
 const BACKEND_POLL_MS = 3000;
+const LONG_TEXT_THRESHOLD = 4000;
+const DEFAULT_CHUNK_SIZE = 3000;
+const MAX_CHUNK_SIZE = 12000;
+const DEFAULT_WPM = 165;
+
+const LANGUAGE_LABELS = {
+  en: "English",
+  fr: "French",
+  es: "Spanish",
+  de: "German",
+  it: "Italian",
+  pt: "Portuguese",
+  ru: "Russian",
+  ja: "Japanese",
+  ko: "Korean",
+  zh: "Chinese",
+};
+
+const MODEL_DEPENDENCIES = {
+  qwen3_tts: ["qwen3_tts", "qwen3_tokenizer_12hz"],
+  speecht5: ["speecht5", "speecht5_vocoder"],
+};
+
+const PERF_PROFILES = {
+  rtx3090: { label: "RTX 3090", multiplier: 1.0 },
+  rtx4070: { label: "RTX 4070", multiplier: 1.15 },
+  cpu: { label: "CPU", multiplier: 4.0 },
+};
+
+const MODEL_RTF_BASE = {
+  dia2: 0.25,
+  qwen3_tts: 0.35,
+  parler: 0.6,
+  bark: 0.9,
+  speecht5: 0.5,
+  mms: 0.7,
+  xtts: 0.8,
+  f5_tts: 0.7,
+  cosyvoice: 0.7,
+  chroma_4b: 1.0,
+  kokoro: 0.4,
+};
 
 function formatBytes(bytes) {
   if (bytes <= 0) return "—";
@@ -156,6 +199,72 @@ function ProgressBar({ progress, message, showDetails = true }) {
   );
 }
 
+function countWords(text) {
+  if (!text) return 0;
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function formatDuration(seconds) {
+  if (!seconds || Number.isNaN(seconds)) return "—";
+  const total = Math.max(0, Math.round(seconds));
+  const hrs = Math.floor(total / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hrs > 0) return `${hrs}h ${mins}m`;
+  if (mins > 0) return `${mins}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function estimateAudioSeconds(words, wpm) {
+  if (!words) return 0;
+  const effectiveWpm = wpm || DEFAULT_WPM;
+  return (words / effectiveWpm) * 60;
+}
+
+function estimateGenerationSeconds(audioSeconds, modelId, profileKey) {
+  if (!audioSeconds) return 0;
+  const base = MODEL_RTF_BASE[modelId] ?? 0.8;
+  const profile = PERF_PROFILES[profileKey] || PERF_PROFILES.rtx3090;
+  return audioSeconds * base * profile.multiplier;
+}
+
+function VoiceWheel({ voices, selectedId, onSelect, centerLabel }) {
+  if (!voices || voices.length === 0) {
+    return (
+      <div className="voice-wheel voice-wheel-empty">
+        <span>No presets available</span>
+      </div>
+    );
+  }
+
+  const count = voices.length;
+  const radius = count <= 5 ? 90 : count <= 8 ? 115 : count <= 12 ? 135 : 160;
+  const size = radius * 2 + 80;
+
+  return (
+    <div className="voice-wheel" style={{ width: size, height: size }}>
+      {centerLabel && <div className="voice-wheel-center">{centerLabel}</div>}
+      {voices.map((voice, idx) => {
+        const angle = (360 / count) * idx;
+        const transform = `rotate(${angle}deg) translate(${radius}px) rotate(${-angle}deg)`;
+        const isSelected = voice.id === selectedId;
+        return (
+          <button
+            key={voice.id}
+            type="button"
+            className={`voice-wheel-item ${isSelected ? "selected" : ""}`}
+            style={{ transform }}
+            onClick={() => onSelect(voice.id)}
+            title={voice.label}
+          >
+            <span>{voice.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ModelCard({ model, onDownload, downloadProgress, downloadingModels }) {
   const hasModel = model.exists;
   const modelDownloadProgress =
@@ -231,8 +340,13 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
     dia2: { name: "Dia2-2B", description: "Streaming dialogue TTS, conversational and natural.", size: "~2.5 GB", default: true },
     bark: { name: "Bark Small", description: "Expressive, multi-lingual speech synthesis.", size: "~5 GB", default: false },
     speecht5: { name: "SpeechT5 + HiFiGAN", description: "Neural TTS with high-quality vocoder.", size: "~2 GB", default: false },
+    speecht5_vocoder: { name: "SpeechT5 HiFiGAN", description: "Vocoder for SpeechT5 voices.", size: "~90 MB", default: false },
     parler: { name: "Parler-TTS", description: "Style-controlled TTS with promptable expression.", size: "~2 GB", default: false },
     mms: { name: "MMS TTS", description: "Meta's Massively Multilingual Speech models.", size: "~500 MB", default: false },
+    kokoro: { name: "Kokoro-82M", description: "Lightweight TTS model (optional).", size: "~300 MB", default: false },
+    chroma_4b: { name: "Chroma-4B", description: "FlashLabs Chroma-4B (gated).", size: "~8 GB", default: false },
+    qwen3_tts: { name: "Qwen3-TTS CustomVoice", description: "Multi-lingual custom voice TTS.", size: "~3.6 GB", default: false },
+    qwen3_tokenizer_12hz: { name: "Qwen3-TTS Tokenizer", description: "Tokenizer required for Qwen3-TTS.", size: "~50 MB", default: false },
   };
 
   const handleToggle = useCallback((modelId) => {
@@ -264,7 +378,7 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
     
     try {
       for (const modelId of selectedModels) {
-        await downloadModels([modelId]);
+        await onDownload(modelId);
         if (onRefresh) {
           await onRefresh();
         }
@@ -275,7 +389,7 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
         setIsBatchDownloading(false);
       }, 1000);
     }
-  }, [selectedModels, downloadModels, onRefresh]);
+  }, [selectedModels, onDownload, onRefresh]);
 
   const handleCancelDownload = useCallback(async () => {
     setIsCancelling(true);
@@ -398,8 +512,90 @@ function ModelDownloadPanel({ models, onDownload, downloadProgress, isDownloadin
   );
 }
 
+function SettingsPanel({
+  t,
+  voiceBrowseMode,
+  onChangeVoiceBrowseMode,
+  onOpenModels,
+  onClose,
+  perfProfile,
+  onChangePerfProfile,
+  readingSpeed,
+  onChangeReadingSpeed,
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content settings-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("settings.title")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="settings-section">
+          <h3>{t("settings.voiceBrowseTitle")}</h3>
+          <p className="modal-description">{t("settings.voiceBrowseDescription")}</p>
+          <div className="segmented">
+            <button
+              type="button"
+              className={`segmented-btn ${voiceBrowseMode === "model" ? "active" : ""}`}
+              onClick={() => onChangeVoiceBrowseMode("model")}
+            >
+              {t("settings.voiceBrowseModel")}
+            </button>
+            <button
+              type="button"
+              className={`segmented-btn ${voiceBrowseMode === "language" ? "active" : ""}`}
+              onClick={() => onChangeVoiceBrowseMode("language")}
+            >
+              {t("settings.voiceBrowseLanguage")}
+            </button>
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>{t("settings.performanceTitle")}</h3>
+          <p className="modal-description">{t("settings.performanceDescription")}</p>
+          <div className="field">
+            <label className="label">{t("settings.performanceProfile")}</label>
+            <select
+              className="input"
+              value={perfProfile}
+              onChange={(e) => onChangePerfProfile(e.target.value)}
+            >
+              {Object.entries(PERF_PROFILES).map(([key, profile]) => (
+                <option key={key} value={key}>
+                  {profile.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label className="label">{t("settings.readingSpeed", { wpm: readingSpeed })}</label>
+            <input
+              type="range"
+              min="120"
+              max="220"
+              step="5"
+              value={readingSpeed}
+              onChange={(e) => onChangeReadingSpeed(parseInt(e.target.value))}
+            />
+          </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>{t("settings.modelsTitle")}</h3>
+          <p className="modal-description">{t("settings.modelsDescription")}</p>
+          <button className="button" onClick={onOpenModels}>
+            {t("settings.openModels")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LongAudioModal({ text, voiceId, onConfirm, onCancel, t }) {
-  const [chunkSize, setChunkSize] = useState(2000);
+  const [chunkSize, setChunkSize] = useState(DEFAULT_CHUNK_SIZE);
   const [parallel, setParallel] = useState(false);
 
   const chunkCount = Math.ceil(text.length / chunkSize);
@@ -446,7 +642,7 @@ function LongAudioModal({ text, voiceId, onConfirm, onCancel, t }) {
           <input
             type="range"
             min="500"
-            max="5000"
+            max={MAX_CHUNK_SIZE}
             step="500"
             value={chunkSize}
             onChange={e => setChunkSize(parseInt(e.target.value))}
@@ -483,12 +679,14 @@ export default function App() {
     downloading: false,
     downloadError: null,
     downloadProgress: null,
+    needsDownload: false,
     provider: "auto",
     providerMessage: "",
     models: [],
     searchPaths: [],
     bundledPath: null,
   });
+  const autoDownloadAttempted = useRef(false);
   const [synthesisProgress, setSynthesisProgress] = useState(0);
   const [synthesisStatus, setSynthesisStatus] = useState("");
   const [retryJob, setRetryJob] = useState(null);
@@ -496,6 +694,22 @@ export default function App() {
   const [apiBase, setApiBase] = useState(getApiBase());
   const [showModelsPanel, setShowModelsPanel] = useState(false);
   const [showLongAudioModal, setShowLongAudioModal] = useState(false);
+  const autoDownloadModels = useRef(new Set());
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+  const [voiceBrowseMode, setVoiceBrowseMode] = useState(() => {
+    if (typeof window === "undefined") return "model";
+    return localStorage.getItem("oratioviva_voice_browse_mode") || "model";
+  });
+  const [perfProfile, setPerfProfile] = useState(() => {
+    if (typeof window === "undefined") return "rtx3090";
+    return localStorage.getItem("oratioviva_perf_profile") || "rtx3090";
+  });
+  const [readingSpeed, setReadingSpeed] = useState(() => {
+    if (typeof window === "undefined") return DEFAULT_WPM;
+    const stored = localStorage.getItem("oratioviva_reading_wpm");
+    return stored ? parseInt(stored, 10) : DEFAULT_WPM;
+  });
+  const [analytics, setAnalytics] = useState(null);
 
   useEffect(() => {
     localStorage.clear();
@@ -544,6 +758,21 @@ export default function App() {
     }
   }, [voiceRef]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("oratioviva_voice_browse_mode", voiceBrowseMode);
+  }, [voiceBrowseMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("oratioviva_perf_profile", perfProfile);
+  }, [perfProfile]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("oratioviva_reading_wpm", readingSpeed.toString());
+  }, [readingSpeed]);
+
   const checkBackend = useCallback(async () => {
     try {
       const base = await resolveApiBase();
@@ -574,6 +803,7 @@ export default function App() {
         refreshHistory();
         refreshJobs();
         refreshModels();
+        refreshAnalytics();
         return;
       }
       await new Promise(r => setTimeout(r, 1000));
@@ -639,12 +869,20 @@ export default function App() {
         downloading: res.downloading,
         downloadError: res.download_error || null,
         downloadProgress: res.download_progress || null,
+        needsDownload: res.needs_download || false,
         models: res.models || [],
         provider: res.provider || "auto",
         providerMessage: res.provider_message || "",
         searchPaths: res.search_paths || [],
         bundledPath: res.bundled_path || null,
       });
+    } catch { /* noop */ }
+  }
+
+  async function refreshAnalytics() {
+    try {
+      const res = await fetchAnalytics();
+      setAnalytics(res);
     } catch { /* noop */ }
   }
 
@@ -657,19 +895,38 @@ export default function App() {
   }, [modelState.downloading]);
 
   useEffect(() => {
+    if (!backendReady || autoDownloadAttempted.current) return;
+    if (!modelState.models.length) return;
+    if (modelState.downloading || modelState.downloadProgress) return;
+
+    const baseModel = modelState.models.find((model) => model.id === "dia2");
+    if (!baseModel || baseModel.exists) return;
+
+    autoDownloadAttempted.current = true;
+    downloadModels(["dia2"])
+      .then(() => refreshModels())
+      .catch((err) => {
+        console.error("Auto-download of Dia2 failed:", err);
+      });
+  }, [
+    backendReady,
+    modelState.models,
+    modelState.downloading,
+    modelState.downloadProgress,
+  ]);
+
+  useEffect(() => {
     let timer;
     timer = setInterval(refreshJobs, JOBS_POLL_MS);
     return () => { if (timer) clearInterval(timer); };
   }, []);
 
-  const voiceOptions = useMemo(
-    () => voices.map((v) => (
-      <option key={v.id} value={v.id}>
-        {v.label} - {v.language.toUpperCase()}
-      </option>
-    )),
-    [voices],
-  );
+  useEffect(() => {
+    if (!backendReady) return undefined;
+    const timer = setInterval(refreshAnalytics, 10000);
+    return () => clearInterval(timer);
+  }, [backendReady]);
+
 
   function getJobStatusInfo(status) {
     const statusLower = (status || "").toLowerCase();
@@ -685,8 +942,7 @@ export default function App() {
     return statusMap[statusLower] || { class: "status-default", icon: "•", label: status || "Unknown" };
   }
 
-  function getVoiceModelId(voiceId) {
-    const voice = voices.find(v => v.id === voiceId);
+  function resolveModelIdForVoice(voice) {
     if (!voice) return null;
     const modelMap = {
       dia2: "dia2",
@@ -695,17 +951,19 @@ export default function App() {
       speecht5: "speecht5",
       mms: "mms",
       xtts: "xtts",
+      "f5-tts": "f5_tts",
       f5_tts: "f5_tts",
       cosyvoice: "cosyvoice",
       chroma: "chroma_4b",
       qwen: "qwen3_tts",
     };
+    const lowerModel = (voice.model || "").toLowerCase();
+    const lowerId = (voice.id || "").toLowerCase();
     for (const [needle, modelId] of Object.entries(modelMap)) {
-      const lowerModel = (voice.model || "").toLowerCase();
       if (
-        voice.id.includes(needle) ||
+        lowerId.includes(needle) ||
         lowerModel.includes(needle) ||
-        voice.id.includes(modelId) ||
+        lowerId.includes(modelId) ||
         lowerModel.includes(modelId)
       ) {
         return modelId;
@@ -714,11 +972,63 @@ export default function App() {
     return null;
   }
 
-  function isModelAvailable(voiceId) {
+  function getVoiceModelId(voiceId) {
+    const voice = voices.find(v => v.id === voiceId);
+    return resolveModelIdForVoice(voice);
+  }
+
+  function getRequiredModelsForModel(modelId) {
+    return MODEL_DEPENDENCIES[modelId] || (modelId ? [modelId] : []);
+  }
+
+  function getRequiredModelsForVoice(voiceId) {
     const modelId = getVoiceModelId(voiceId);
-    if (!modelId) return true;
-    const model = modelState.models.find(m => m.id === modelId);
-    return model?.exists === true;
+    if (!modelId) return [];
+    return getRequiredModelsForModel(modelId);
+  }
+
+  function areRequiredModelsAvailable(voiceId) {
+    const required = getRequiredModelsForVoice(voiceId);
+    if (!required.length) return true;
+    return required.every((id) => {
+      const model = modelState.models.find(m => m.id === id);
+      return model?.exists === true;
+    });
+  }
+
+  async function maybeAutoDownloadModels(voiceId) {
+    if (modelState.downloading) return false;
+    const required = getRequiredModelsForVoice(voiceId);
+    if (!required.length) return false;
+    const missing = required.filter((id) => {
+      const model = modelState.models.find(m => m.id === id);
+      return !model?.exists;
+    });
+    if (!missing.length) return false;
+
+    const key = missing.sort().join(",");
+    if (autoDownloadModels.current.has(key)) return true;
+    autoDownloadModels.current.add(key);
+    setStatus(`Downloading required model(s): ${missing.join(", ")}...`);
+    try {
+      await downloadModels(missing);
+      await refreshModels();
+    } catch (err) {
+      setStatus(`Model download failed: ${err.message}`);
+    }
+    return true;
+  }
+
+  async function handleDownloadModel(modelId) {
+    const required = getRequiredModelsForModel(modelId);
+    if (!required.length) return;
+    try {
+      setStatus(`Downloading ${required.join(", ")}...`);
+      await downloadModels(required);
+      await refreshModels();
+    } catch (err) {
+      setStatus(`Model download failed: ${err.message}`);
+    }
   }
 
   async function pollJob(jobId) {
@@ -733,7 +1043,17 @@ export default function App() {
     ];
 
     while (attempts < maxAttempts) {
-      const job = await fetchJob(jobId);
+      let job;
+      try {
+        job = await fetchJob(jobId);
+      } catch (err) {
+        if (err.message && err.message.includes("Job not found")) {
+          setSynthesisProgress(0);
+          setSynthesisStatus("");
+          throw new Error("Backend restarted during synthesis. Please retry.");
+        }
+        throw err;
+      }
       const progressIndex = Math.min(attempts, statusMessages.length - 1);
       setSynthesisStatus(statusMessages[progressIndex]?.message || "In progress...");
       const base = statusMessages[progressIndex]?.progress ?? 80;
@@ -769,10 +1089,15 @@ export default function App() {
       return;
     }
 
-    const isLongAudio = text.length > 4000 || longAudioOptions;
+    const isLongAudio = text.length > LONG_TEXT_THRESHOLD || longAudioOptions;
 
-    if (!isModelAvailable(voiceId)) {
-      const modelId = getVoiceModelId(voiceId);
+    if (isLongAudio && !longAudioOptions) {
+      setShowLongAudioModal(true);
+      return;
+    }
+
+    if (!areRequiredModelsAvailable(voiceId)) {
+      await maybeAutoDownloadModels(voiceId);
       setStatus(t("status.modelMissing", { voice: voiceId }));
       setShowModelsPanel(true);
       return;
@@ -961,10 +1286,51 @@ export default function App() {
 
   const currentVoice = voices.find(v => v.id === voiceId);
   const currentModelId = getVoiceModelId(voiceId);
-  const currentModel = modelState.models.find(m => m.id === currentModelId);
-  const currentModelReady = !currentModelId || currentModel?.exists;
+  const currentModelReady = areRequiredModelsAvailable(voiceId);
 
-  const needsLongAudio = text.length > 4000;
+  const wordCount = countWords(text);
+  const estimatedAudioSeconds = estimateAudioSeconds(wordCount, readingSpeed);
+  const estimatedGenSeconds = estimateGenerationSeconds(
+    estimatedAudioSeconds,
+    currentModelId,
+    perfProfile,
+  );
+  const estimatedGenLow = estimatedGenSeconds * 0.7;
+  const estimatedGenHigh = estimatedGenSeconds * 1.3;
+  const analyticsAvgRtf = analytics?.rtf?.average || null;
+  const analyticsModelRtf =
+    (currentVoice?.model && analytics?.rtf?.by_model?.[currentVoice.model]) || null;
+
+  const voicesByModel = useMemo(() => {
+    const groups = {};
+    for (const voice of voices) {
+      const modelId = resolveModelIdForVoice(voice) || voice.model;
+      if (!groups[modelId]) groups[modelId] = [];
+      groups[modelId].push(voice);
+    }
+    return groups;
+  }, [voices]);
+
+  const voicesByLanguage = useMemo(() => {
+    const groups = {};
+    for (const voice of voices) {
+      const lang = (voice.language || "unknown").toLowerCase();
+      if (!groups[lang]) groups[lang] = [];
+      groups[lang].push(voice);
+    }
+    return groups;
+  }, [voices]);
+
+  const sortedLanguages = useMemo(() => {
+    return Object.keys(voicesByLanguage).sort((a, b) => a.localeCompare(b));
+  }, [voicesByLanguage]);
+
+  const missingModels = useMemo(
+    () => modelState.models.filter((model) => !model.exists),
+    [modelState.models],
+  );
+
+  const needsLongAudio = text.length > LONG_TEXT_THRESHOLD;
 
   if (i18nLoading) {
     return <div className="loading-screen"><div className="loading-content"><p>Loading...</p></div></div>;
@@ -988,14 +1354,28 @@ export default function App() {
       {showModelsPanel && (
         <ModelDownloadPanel
           models={modelState.models}
-          onDownload={async (modelId) => {
-            await downloadModels([modelId]);
-            await refreshModels();
-          }}
+          onDownload={handleDownloadModel}
           downloadProgress={modelState.downloadProgress}
           isDownloading={modelState.downloading}
           onRefresh={refreshModels}
           onClose={() => setShowModelsPanel(false)}
+        />
+      )}
+
+      {showSettingsPanel && (
+        <SettingsPanel
+          t={t}
+          voiceBrowseMode={voiceBrowseMode}
+          onChangeVoiceBrowseMode={setVoiceBrowseMode}
+          onOpenModels={() => {
+            setShowSettingsPanel(false);
+            setShowModelsPanel(true);
+          }}
+          onClose={() => setShowSettingsPanel(false)}
+          perfProfile={perfProfile}
+          onChangePerfProfile={setPerfProfile}
+          readingSpeed={readingSpeed}
+          onChangeReadingSpeed={setReadingSpeed}
         />
       )}
 
@@ -1028,7 +1408,7 @@ export default function App() {
           <span className={`badge ${currentModelReady ? "badge-ok" : "badge-warn"}`}>
             {currentModelReady ? t("toolbar.modelOk") : t("toolbar.modelMissing")}
           </span>
-          <button className="ghost" onClick={() => { refreshModels(); setShowModelsPanel(true); }}>
+          <button className="ghost" onClick={() => { refreshModels(); setShowSettingsPanel(true); }}>
             {t("toolbar.settings")}
           </button>
           <select
@@ -1089,6 +1469,36 @@ export default function App() {
               onChange={(e) => setText(e.target.value)}
             />
 
+            <div className="estimator-panel" aria-live="polite">
+              <div>
+                <span className="estimator-label">{t("analytics.estimatedAudio")}</span>
+                <strong>{formatDuration(estimatedAudioSeconds)}</strong>
+                <span className="estimator-muted">
+                  {wordCount} {t("analytics.words")}
+                </span>
+              </div>
+              <div>
+                <span className="estimator-label">{t("analytics.estimatedGeneration")}</span>
+                <strong>
+                  {formatDuration(estimatedGenLow)} – {formatDuration(estimatedGenHigh)}
+                </strong>
+                <span className="estimator-muted">
+                  {PERF_PROFILES[perfProfile]?.label || perfProfile}
+                </span>
+              </div>
+              {(analyticsModelRtf || analyticsAvgRtf) && (
+                <div>
+                  <span className="estimator-label">{t("analytics.avgRealtime")}</span>
+                  <strong>
+                    {(analyticsModelRtf || analyticsAvgRtf).toFixed(2)}x
+                  </strong>
+                  <span className="estimator-muted">
+                    {analyticsModelRtf ? t("analytics.modelBased") : t("analytics.globalBased")}
+                  </span>
+                </div>
+              )}
+            </div>
+
             {loading && (
               <div className="synthesis-progress">
                 <ProgressBar progress={synthesisProgress / 100} message={synthesisStatus || t("form.synthesizing")} />
@@ -1107,25 +1517,120 @@ export default function App() {
               </div>
             )}
 
-            <div className="inline">
-              <div className="field">
+            <div className="field voice-browser-section">
+              <div className="label-row">
                 <label className="label">{t("form.voiceLabel")}</label>
-                <div className="voice-select-wrapper">
-                  <select className="input" value={voiceId} onChange={(e) => setVoiceId(e.target.value)}>
-                    {voiceOptions}
-                  </select>
-                  {!currentModelReady && (
-                    <button
-                      type="button"
-                      className="voice-download-hint"
-                      onClick={() => setShowModelsPanel(true)}
-                      title={t("models.installForVoice", { voice: voiceId })}
-                    >
-                      ↓
-                    </button>
-                  )}
-                </div>
+                <span className="voice-view-chip">
+                  {voiceBrowseMode === "model"
+                    ? t("settings.voiceBrowseModel")
+                    : t("settings.voiceBrowseLanguage")}
+                </span>
               </div>
+              <div className="voice-browser">
+                {voiceBrowseMode === "model" ? (
+                  <div className="voice-model-grid">
+                    {modelState.models.map((model) => {
+                      const modelVoices = voicesByModel[model.id] || [];
+                      const installed = model.exists;
+                      const isDownloading = modelState.downloadProgress?.model_id === model.id;
+                      const modelName = model.repo_id.split("/")[1] || model.repo_id;
+                      return (
+                        <div
+                          key={model.id}
+                          className={`voice-model-card ${installed ? "installed" : "missing"}`}
+                        >
+                          <div className="voice-model-header">
+                            <div>
+                              <h4>{modelName}</h4>
+                              <span className="model-repo">{model.repo_id}</span>
+                            </div>
+                            {installed ? (
+                              <span className="badge badge-ok">{t("models.installed")}</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="button button-primary button-small"
+                                onClick={() => handleDownloadModel(model.id)}
+                                disabled={modelState.downloading}
+                              >
+                                {isDownloading ? t("models.downloading") : t("models.download")}
+                              </button>
+                            )}
+                          </div>
+
+                          {installed ? (
+                            <VoiceWheel
+                              voices={modelVoices}
+                              selectedId={voiceId}
+                              onSelect={setVoiceId}
+                              centerLabel={modelName}
+                            />
+                          ) : (
+                            <div className="voice-locked">
+                              <p>
+                                {t("models.downloadToUnlock", { count: modelVoices.length })}
+                              </p>
+                              {isDownloading && (
+                                <ProgressBar
+                                  progress={modelState.downloadProgress?.progress}
+                                  message={modelState.downloadProgress?.message}
+                                />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="voice-language-grid">
+                    {sortedLanguages.map((lang) => {
+                      const voicesForLang = voicesByLanguage[lang] || [];
+                      const availableVoices = voicesForLang.filter((voice) =>
+                        areRequiredModelsAvailable(voice.id),
+                      );
+                      if (!availableVoices.length) return null;
+                      return (
+                        <div key={lang} className="voice-language-card">
+                          <div className="voice-language-header">
+                            <h4>{LANGUAGE_LABELS[lang] || lang.toUpperCase()}</h4>
+                            <span className="badge">{availableVoices.length} presets</span>
+                          </div>
+                          <VoiceWheel
+                            voices={availableVoices}
+                            selectedId={voiceId}
+                            onSelect={setVoiceId}
+                            centerLabel={LANGUAGE_LABELS[lang] || lang.toUpperCase()}
+                          />
+                        </div>
+                      );
+                    })}
+                    {missingModels.length > 0 && (
+                      <div className="voice-missing-models">
+                        <h4>{t("models.missingModels")}</h4>
+                        <div className="missing-model-list">
+                          {missingModels.map((model) => {
+                            const modelName = model.repo_id.split("/")[1] || model.repo_id;
+                            return (
+                              <button
+                                key={model.id}
+                                type="button"
+                                className="ghost small"
+                                onClick={() => handleDownloadModel(model.id)}
+                              >
+                                ↓ {modelName}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="inline">
               <div className="field">
                 <label className="label">{t("form.speedLabel", { speed: speed.toFixed(1) })}</label>
                 <input
@@ -1185,7 +1690,7 @@ export default function App() {
                   className="button button-secondary"
                   onClick={() => setShowLongAudioModal(true)}
                 >
-                  Long Text ({Math.ceil(text.length / 2000)} chunks)
+                  Long Text ({Math.ceil(text.length / DEFAULT_CHUNK_SIZE)} chunks)
                 </button>
               )}
             </div>
@@ -1295,6 +1800,63 @@ export default function App() {
           })}
           {jobs.length === 0 && <p className="muted">{t("jobs.noJobs")}</p>}
         </div>
+      </section>
+
+      <section className="card analytics">
+        <div className="history-header">
+          <div>
+            <p className="eyebrow">{t("analytics.title")}</p>
+            <h2>{t("analytics.metrics")}</h2>
+          </div>
+          <div className="row">
+            <button className="ghost" onClick={refreshAnalytics}>{t("analytics.refresh")}</button>
+          </div>
+        </div>
+        {!analytics ? (
+          <p className="muted">{t("analytics.loading")}</p>
+        ) : (
+          <div className="analytics-grid">
+            <div className="analytics-card">
+              <h4>{t("analytics.runtime")}</h4>
+              <p>{analytics.provider}</p>
+              {analytics.provider_message && (
+                <small className="muted">{analytics.provider_message}</small>
+              )}
+            </div>
+            <div className="analytics-card">
+              <h4>{t("analytics.activity")}</h4>
+              <p>
+                {t("analytics.historyItems")}: {analytics.counts?.history || 0}
+              </p>
+              <p>
+                {t("analytics.jobsStored")}: {analytics.counts?.jobs || 0}
+              </p>
+              <p>
+                {t("analytics.audioDuration")}: {formatDuration(analytics.counts?.audio_duration_seconds || 0)}
+              </p>
+            </div>
+            <div className="analytics-card">
+              <h4>{t("analytics.estimator")}</h4>
+              <p>
+                {t("analytics.estimatedAudio")}: {formatDuration(estimatedAudioSeconds)}
+              </p>
+              <p>
+                {t("analytics.estimatedGeneration")}: {formatDuration(estimatedGenLow)} – {formatDuration(estimatedGenHigh)}
+              </p>
+              <p>
+                {t("analytics.estimationProfile")}: {PERF_PROFILES[perfProfile]?.label || perfProfile}
+              </p>
+              <p>
+                {t("analytics.readingSpeed", { wpm: readingSpeed })}
+              </p>
+              {(analyticsModelRtf || analyticsAvgRtf) && (
+                <p>
+                  {t("analytics.avgRealtime")}: {(analyticsModelRtf || analyticsAvgRtf).toFixed(2)}x
+                </p>
+              )}
+            </div>
+          </div>
+        )}
       </section>
     </div>
   );
