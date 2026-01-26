@@ -369,6 +369,97 @@ class TTSService:
             raise last_error
         return tts(text)
 
+    def _compose_presets(
+        self,
+        tone_id: Optional[str],
+        prompt_id: Optional[str],
+        style: Optional[str],
+        voice_prompt: Optional[str],
+        model_name: Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        final_style = style
+        final_voice_prompt = voice_prompt
+
+        try:
+            from backend.main import (
+                load_presets,
+                DEFAULT_TONE_PRESETS,
+                DEFAULT_PROMPT_PRESETS,
+            )
+
+            presets = load_presets()
+            tones = presets.get("tones", {})
+            prompts = presets.get("prompts", {})
+
+            tone_preset = None
+            if tone_id:
+                default_tone_ids = {p.id for p in DEFAULT_TONE_PRESETS}
+                if tone_id in default_tone_ids:
+                    for p in DEFAULT_TONE_PRESETS:
+                        if p.id == tone_id:
+                            tone_preset = p.model_dump()
+                            break
+                elif tone_id in tones:
+                    tone_preset = tones[tone_id]
+
+            prompt_preset = None
+            if prompt_id:
+                default_prompt_ids = {p.id for p in DEFAULT_PROMPT_PRESETS}
+                if prompt_id in default_prompt_ids:
+                    for p in DEFAULT_PROMPT_PRESETS:
+                        if p.id == prompt_id:
+                            prompt_preset = p.model_dump()
+                            break
+                elif prompt_id in prompts:
+                    prompt_preset = prompts[prompt_id]
+
+            if tone_preset and model_name:
+                overrides = tone_preset.get("overrides", {})
+                if model_name in overrides:
+                    override = overrides[model_name]
+                    if override:
+                        if override.get("style"):
+                            final_style = override["style"]
+                        if override.get("voice_prompt"):
+                            final_voice_prompt = override["voice_prompt"]
+                else:
+                    if tone_preset.get("style") and not final_style:
+                        final_style = tone_preset["style"]
+                    if tone_preset.get("voice_prompt") and not final_voice_prompt:
+                        final_voice_prompt = tone_preset["voice_prompt"]
+            else:
+                if tone_preset:
+                    if tone_preset.get("style") and not final_style:
+                        final_style = tone_preset["style"]
+                    if tone_preset.get("voice_prompt") and not final_voice_prompt:
+                        final_voice_prompt = tone_preset["voice_prompt"]
+
+            if prompt_preset and model_name:
+                overrides = prompt_preset.get("overrides", {})
+                if model_name in overrides:
+                    override = overrides[model_name]
+                    if override:
+                        if override.get("style"):
+                            final_style = override["style"]
+                        if override.get("voice_prompt"):
+                            final_voice_prompt = override["voice_prompt"]
+                else:
+                    if prompt_preset.get("style") and not final_style:
+                        final_style = prompt_preset["style"]
+                    if prompt_preset.get("voice_prompt") and not final_voice_prompt:
+                        final_voice_prompt = prompt_preset["voice_prompt"]
+            else:
+                if prompt_preset:
+                    if prompt_preset.get("style") and not final_style:
+                        final_style = prompt_preset["style"]
+                    if prompt_preset.get("voice_prompt") and not final_voice_prompt:
+                        final_voice_prompt = prompt_preset["voice_prompt"]
+
+        except Exception:
+            pass
+
+        return final_style, final_voice_prompt
+
     def synthesize(
         self,
         *,
@@ -376,7 +467,10 @@ class TTSService:
         voice_id: str,
         speed: float = 1.0,
         quality: Optional[str] = None,
+        tone_id: Optional[str] = None,
+        prompt_id: Optional[str] = None,
         style: Optional[str] = None,
+        voice_prompt: Optional[str] = None,
         voice_ref: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> AudioResult:
@@ -385,6 +479,11 @@ class TTSService:
 
         if voice_ref:
             voice_ref = validate_voice_ref(voice_ref)
+
+        voice = VOICE_BY_ID[voice_id]
+        style, voice_prompt = self._compose_presets(
+            tone_id, prompt_id, style, voice_prompt, voice.model
+        )
 
         job_id = job_id or str(uuid.uuid4())
         destination = self.audio_dir / f"{job_id}.wav"
@@ -509,7 +608,9 @@ class TTSService:
             dia2_venv_python = Path(override)
         else:
             backend_dir = Path(__file__).resolve().parent
-            dia2_venv_python = backend_dir.parent / ".venv_dia2" / "Scripts" / "python.exe"
+            dia2_venv_python = (
+                backend_dir.parent / ".venv_dia2" / "Scripts" / "python.exe"
+            )
 
         if not dia2_venv_python.exists():
             raise RuntimeError(
@@ -567,9 +668,7 @@ class TTSService:
             top_k = int(os.getenv("ORATIO_DIA2_FAST_TOP_K", str(base_top_k)))
             return cfg_scale, temperature, top_k
         if quality_key == "quality":
-            cfg_scale = float(
-                os.getenv("ORATIO_DIA2_QUALITY_CFG_SCALE", str(base_cfg))
-            )
+            cfg_scale = float(os.getenv("ORATIO_DIA2_QUALITY_CFG_SCALE", str(base_cfg)))
             temperature = float(
                 os.getenv("ORATIO_DIA2_QUALITY_TEMPERATURE", str(base_temp))
             )
@@ -760,9 +859,7 @@ class TTSService:
             except json.JSONDecodeError:
                 pass
 
-        raise RuntimeError(
-            f"Invalid JSON from {context} worker: {raw[:500]}".strip()
-        )
+        raise RuntimeError(f"Invalid JSON from {context} worker: {raw[:500]}".strip())
 
     def _synthesize_qwen3_customvoice_batch(
         self,

@@ -201,3 +201,67 @@ export async function exportZip(jobIds) {
 export async function getApiBaseAsync() {
   return resolveApiBase();
 }
+
+export async function fetchPresets() {
+  return jsonFetch("/presets");
+}
+
+export async function saveTonePreset(preset) {
+  return jsonFetch("/presets/tones", {
+    method: "POST",
+    body: JSON.stringify(preset),
+  });
+}
+
+export async function deleteTonePreset(presetId) {
+  const base = await resolveApiBase();
+  const resp = await fetch(`${base}/presets/tones/${presetId}`, { method: "DELETE" });
+  if (!resp.ok) {
+    const detail = await resp.text();
+    throw new Error(detail || "Delete failed");
+  }
+  return resp.json();
+}
+
+export async function savePromptPreset(preset) {
+  return jsonFetch("/presets/prompts", {
+    method: "POST",
+    body: JSON.stringify(preset),
+  });
+}
+
+export async function deletePromptPreset(presetId) {
+  const base = await resolveApiBase();
+  const resp = await fetch(`${base}/presets/prompts/${presetId}`, { method: "DELETE" });
+  if (!resp.ok) {
+    const detail = await resp.text();
+    throw new Error(detail || "Delete failed");
+  }
+  return resp.json();
+}
+
+export async function fetchModelCapabilities(modelName) {
+  return jsonFetch(`/presets/model-capabilities?model_name=${encodeURIComponent(modelName || "")}`);
+}
+
+export async function fetchDiagnostics() {
+  return jsonFetch("/diagnostics");
+}
+
+export async function runCleanup(options) {
+  return jsonFetch("/maintenance/cleanup", {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
+}
+
+export async function getTelemetrySettings() {
+  return jsonFetch("/settings/telemetry");
+}
+
+export async function setTelemetrySettings(settings) {
+  return jsonFetch("/settings/telemetry", {
+    method: "POST",
+    body: JSON.stringify(settings),
+  });
+}

@@ -1,6 +1,6 @@
 {
   "name": "oratioviva-frontend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
     "tauri:dev": "npx tauri dev",
     "pretauri:build": "powershell -Command \"Remove-Item -Path 'src-tauri/target/release/bundle/nsis/*.exe' -ErrorAction SilentlyContinue\"",
     "tauri:build": "npx tauri build"
@@ -18,10 +20,15 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@babel/eslint-parser": "^7.28.6",
+    "@babel/preset-react": "^7.28.5",
     "@tauri-apps/cli": "^2.9.6",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^14.3.1",
     "@vitejs/plugin-react": "^4.2.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.1",
+    "eslint-plugin-react-hooks": "^4.6.0",
     "jsdom": "^24.1.3",
     "vite": "^5.0.8",
     "vitest": "^1.6.1"

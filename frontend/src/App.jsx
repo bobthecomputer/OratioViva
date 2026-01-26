@@ -21,6 +21,16 @@ import {
   getApiBase,
   resolveApiBase,
   saveHfToken,
+  fetchPresets,
+  saveTonePreset,
+  deleteTonePreset,
+  savePromptPreset,
+  deletePromptPreset,
+  fetchModelCapabilities,
+  fetchDiagnostics,
+  runCleanup,
+  getTelemetrySettings,
+  setTelemetrySettings,
 } from "./api";
 import { useTranslation } from "./i18n";
 
@@ -531,6 +541,8 @@ function SettingsPanel({
   onClearHfToken,
   hfTokenMessage,
   hfTokenSaving,
+  crashReports,
+  onChangeCrashReports,
 }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -597,6 +609,19 @@ function SettingsPanel({
           <button className="button" onClick={onOpenModels}>
             {t("settings.openModels")}
           </button>
+        </div>
+
+        <div className="settings-section">
+          <h3>{t("settings.telemetryTitle")}</h3>
+          <p className="modal-description">{t("settings.telemetryDescription")}</p>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={crashReports}
+              onChange={(e) => onChangeCrashReports(e.target.checked)}
+            />
+            <span>{t("settings.crashReportsLabel")}</span>
+          </label>
         </div>
 
         <div className="settings-section">
@@ -723,6 +748,555 @@ function LongAudioModal({ text, voiceId, onConfirm, onCancel, t }) {
   );
 }
 
+function PresetsPanel({ t, presets, onClose, onRefresh }) {
+  const [activeTab, setActiveTab] = useState("tones");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newPreset, setNewPreset] = useState({ id: "", name: "", description: "", style: "", voice_prompt: "", category: "tts" });
+  const [editingId, setEditingId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(null);
+
+  const getPresetsForTab = (tab) => {
+    switch (tab) {
+      case "tones": return presets.tones || [];
+      case "prompts": return presets.prompts || [];
+      case "music": return presets.music || [];
+      case "sfx": return presets.sfx || [];
+      default: return [];
+    }
+  };
+
+  const getSaveFn = (tab) => {
+    switch (tab) {
+      case "tones": return saveTonePreset;
+      case "prompts": return savePromptPreset;
+      default: return savePromptPreset;
+    }
+  };
+
+  const getDeleteFn = (tab) => {
+    switch (tab) {
+      case "tones": return deleteTonePreset;
+      case "prompts": return deletePromptPreset;
+      default: return deletePromptPreset;
+    }
+  };
+
+  const currentPresets = getPresetsForTab(activeTab);
+  const saveFn = getSaveFn(activeTab);
+  const deleteFn = getDeleteFn(activeTab);
+
+  const handleSave = async () => {
+    if (!newPreset.id.trim() || !newPreset.name.trim()) {
+      return;
+    }
+    setSaving(true);
+    try {
+      const presetToSave = {
+        id: newPreset.id.trim().toLowerCase().replace(/\s+/g, "_"),
+        name: newPreset.name.trim(),
+        description: newPreset.description.trim() || undefined,
+        style: newPreset.style.trim() || undefined,
+        voice_prompt: newPreset.voice_prompt.trim() || undefined,
+        category: newPreset.category,
+      };
+      await saveFn(presetToSave);
+      setShowAddForm(false);
+      setNewPreset({ id: "", name: "", description: "", style: "", voice_prompt: "", category: "tts" });
+      onRefresh();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm(t("presets.deleteConfirm"))) return;
+    setDeleting(id);
+    try {
+      await deleteFn(id);
+      onRefresh();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const getTabLabel = (tab) => {
+    switch (tab) {
+      case "tones": return t("presets.tonesTab");
+      case "prompts": return t("presets.promptsTab");
+      case "music": return t("presets.musicTab");
+      case "sfx": return t("presets.sfxTab");
+      default: return tab;
+    }
+  };
+
+  const getAddPresetLabel = (tab) => {
+    switch (tab) {
+      case "tones": return t("presets.addTone");
+      case "prompts": return t("presets.addPrompt");
+      case "music": return t("presets.addMusic");
+      case "sfx": return t("presets.addSfx");
+      default: return t("presets.addPreset");
+    }
+  };
+
+  const presetType = activeTab;
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content presets-panel" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("presets.title")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="preset-tabs">
+          <button
+            className={`tab ${activeTab === "tones" ? "active" : ""}`}
+            onClick={() => setActiveTab("tones")}
+          >
+            {getTabLabel("tones")}
+          </button>
+          <button
+            className={`tab ${activeTab === "prompts" ? "active" : ""}`}
+            onClick={() => setActiveTab("prompts")}
+          >
+            {getTabLabel("prompts")}
+          </button>
+          <button
+            className={`tab ${activeTab === "music" ? "active" : ""}`}
+            onClick={() => setActiveTab("music")}
+          >
+            {getTabLabel("music")}
+          </button>
+          <button
+            className={`tab ${activeTab === "sfx" ? "active" : ""}`}
+            onClick={() => setActiveTab("sfx")}
+          >
+            {getTabLabel("sfx")}
+          </button>
+        </div>
+
+        {!showAddForm ? (
+          <div className="presets-list">
+            {currentPresets.length === 0 ? (
+              <p className="muted">{t("presets.empty")}</p>
+            ) : (
+              currentPresets.map((preset) => (
+                <div key={preset.id} className={`preset-item ${preset.is_default ? "preset-default" : ""} ${preset.is_custom ? "preset-custom" : ""}`}>
+                  <div className="preset-info">
+                    <strong>{preset.name}</strong>
+                    {preset.category && preset.category !== "tts" && (
+                      <span className="category-badge">{preset.category}</span>
+                    )}
+                    {preset.is_default && <span className="default-badge">Default</span>}
+                    {preset.is_custom && <span className="custom-badge">Custom</span>}
+                    {preset.description && <p className="preset-description">{preset.description}</p>}
+                    {preset.style && <p className="preset-detail"><strong>Style:</strong> {preset.style}</p>}
+                    {preset.voice_prompt && <p className="preset-detail"><strong>Prompt:</strong> {preset.voice_prompt}</p>}
+                  </div>
+                  {!preset.is_default && (
+                    <div className="preset-actions">
+                      <button
+                        className="ghost small"
+                        onClick={() => setEditingId(preset.id)}
+                        disabled={deleting === preset.id}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        className="ghost small"
+                        onClick={() => handleDelete(preset.id)}
+                        disabled={deleting === preset.id}
+                      >
+                        {deleting === preset.id ? "..." : "🗑"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+            <button className="button" onClick={() => setShowAddForm(true)}>
+              + {getAddPresetLabel(activeTab)}
+            </button>
+          </div>
+        ) : (
+          <div className="preset-form">
+            <div className="field">
+              <label className="label">{t("presets.nameLabel")}</label>
+              <input
+                className="input"
+                value={newPreset.name}
+                onChange={(e) => setNewPreset({ ...newPreset, name: e.target.value })}
+                placeholder={t("presets.namePlaceholder")}
+              />
+            </div>
+            <div className="field">
+              <label className="label">{t("presets.idLabel")}</label>
+              <input
+                className="input"
+                value={newPreset.id}
+                onChange={(e) => setNewPreset({ ...newPreset, id: e.target.value })}
+                placeholder={t("presets.idPlaceholder")}
+              />
+            </div>
+            <div className="field">
+              <label className="label">{t("presets.descriptionLabel")}</label>
+              <input
+                className="input"
+                value={newPreset.description}
+                onChange={(e) => setNewPreset({ ...newPreset, description: e.target.value })}
+                placeholder={t("presets.descriptionPlaceholder")}
+              />
+            </div>
+            <div className="field">
+              <label className="label">{t("presets.styleLabel")}</label>
+              <input
+                className="input"
+                value={newPreset.style}
+                onChange={(e) => setNewPreset({ ...newPreset, style: e.target.value })}
+                placeholder={t("presets.stylePlaceholder")}
+              />
+            </div>
+            <div className="field">
+              <label className="label">{t("presets.voicePromptLabel")}</label>
+              <textarea
+                className="input textarea"
+                rows={2}
+                value={newPreset.voice_prompt}
+                onChange={(e) => setNewPreset({ ...newPreset, voice_prompt: e.target.value })}
+                placeholder={t("presets.voicePromptPlaceholder")}
+              />
+            </div>
+            <div className="modal-footer">
+              <button className="ghost" onClick={() => setShowAddForm(false)}>
+                {t("presets.cancel")}
+              </button>
+              <button className="button" onClick={handleSave} disabled={saving || !newPreset.id.trim() || !newPreset.name.trim()}>
+                {saving ? t("presets.saving") : t("presets.save")}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FirstRunGuide({ t, onClose }) {
+  const [step, setStep] = useState(0);
+  const steps = [
+    {
+      title: t("firstRun.welcomeTitle"),
+      content: t("firstRun.welcomeContent"),
+      icon: "🎙️",
+    },
+    {
+      title: t("firstRun.modelsTitle"),
+      content: t("firstRun.modelsContent"),
+      icon: "📦",
+    },
+    {
+      title: t("firstRun.voiceRefTitle"),
+      content: t("firstRun.voiceRefContent"),
+      icon: "🎵",
+    },
+    {
+      title: t("firstRun.qualityTitle"),
+      content: t("firstRun.qualityContent"),
+      icon: "⚡",
+    },
+    {
+      title: t("firstRun.readyTitle"),
+      content: t("firstRun.readyContent"),
+      icon: "🚀",
+    },
+  ];
+
+  const handleNext = () => {
+    if (step < steps.length - 1) {
+      setStep(step + 1);
+    } else {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("oratioviva_has_seen_guide", "true");
+      }
+      onClose();
+    }
+  };
+
+  const handleSkip = () => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("oratioviva_has_seen_guide", "true");
+    }
+    onClose();
+  };
+
+  const current = steps[step];
+
+  return (
+    <div className="modal-overlay" onClick={handleSkip}>
+      <div className="modal-content first-run-guide" onClick={e => e.stopPropagation()}>
+        <div className="first-run-header">
+          <div className="first-run-icon">{current.icon}</div>
+          <div className="first-run-progress">
+            {steps.map((_, i) => (
+              <div key={i} className={`progress-dot ${i <= step ? "active" : ""}`} />
+            ))}
+          </div>
+        </div>
+
+        <div className="first-run-content">
+          <h2>{current.title}</h2>
+          <p>{current.content}</p>
+        </div>
+
+        <div className="first-run-actions">
+          <button className="ghost" onClick={handleSkip}>
+            {t("firstRun.skip")}
+          </button>
+          <button className="button" onClick={handleNext}>
+            {step === steps.length - 1 ? t("firstRun.getStarted") : t("firstRun.next")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DiagnosticsPanel({ t, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetchDiagnostics();
+        setData(res);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, []);
+
+  const formatBytes = (bytes) => {
+    if (!bytes) return "N/A";
+    const gb = bytes / (1024**3);
+    return `${gb.toFixed(2)} GB`;
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content diagnostics-panel" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("diagnostics.title")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+
+        {loading ? (
+          <p>{t("diagnostics.loading")}</p>
+        ) : error ? (
+          <p className="error">{t("diagnostics.error", { error })}</p>
+        ) : (
+          <div className="diagnostics-content">
+            <div className="diag-section">
+              <h3>{t("diagnostics.backend")}</h3>
+              <div className="diag-grid">
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.platform")}:</span>
+                  <span className="diag-value">{data?.backend?.platform}</span>
+                </div>
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.pythonVersion")}:</span>
+                  <span className="diag-value">{data?.backend?.python?.version}</span>
+                </div>
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.status")}:</span>
+                  <span className={`diag-value ${data?.backend?.status === "healthy" ? "ok" : "warn"}`}>
+                    {data?.backend?.status}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="diag-section">
+              <h3>{t("diagnostics.storage")}</h3>
+              <div className="diag-grid">
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.outputsFree")}:</span>
+                  <span className="diag-value">{formatBytes(data?.storage?.outputs_disk?.free_bytes)}</span>
+                </div>
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.modelsFree")}:</span>
+                  <span className="diag-value">{formatBytes(data?.storage?.models_disk?.free_bytes)}</span>
+                </div>
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.outputsDir")}:</span>
+                  <span className="diag-value small">{data?.storage?.outputs_dir}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="diag-section">
+              <h3>{t("diagnostics.settings")}</h3>
+              <div className="diag-grid">
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.hfToken")}:</span>
+                  <span className={`diag-value ${data?.settings?.hf_token_set ? "ok" : "warn"}`}>
+                    {data?.settings?.hf_token_set ? t("diagnostics.set") : t("diagnostics.notSet")}
+                  </span>
+                </div>
+                <div className="diag-item">
+                  <span className="diag-label">{t("diagnostics.provider")}:</span>
+                  <span className="diag-value">{data?.settings?.provider}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="diag-section">
+              <h3>{t("diagnostics.models")}</h3>
+              <div className="diag-item">
+                <span className="diag-label">{t("diagnostics.availableModels")}:</span>
+                <span className="diag-value">{data?.models?.available?.join(", ") || t("diagnostics.none")}</span>
+              </div>
+              <div className="diag-item">
+                <span className="diag-label">{t("diagnostics.downloading")}:</span>
+                <span className="diag-value">{data?.models?.downloading ? t("diagnostics.yes") : t("diagnostics.no")}</span>
+              </div>
+            </div>
+
+            {data?.last_errors?.length > 0 && (
+              <div className="diag-section">
+                <h3>{t("diagnostics.lastErrors")}</h3>
+                <div className="error-log">
+                  {data.last_errors.map((err, i) => (
+                    <div key={i} className="error-line">{err}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="modal-footer">
+          <button className="button" onClick={onClose}>{t("diagnostics.close")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CleanupPanel({ t, onClose, diagnostics }) {
+  const [deletingAudio, setDeletingAudio] = useState(true);
+  const [deletingHistory, setDeletingHistory] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const handleCleanup = async () => {
+    setCleaning(true);
+    setResult(null);
+    try {
+      const res = await runCleanup({
+        delete_audio: deletingAudio,
+        delete_history: deletingHistory,
+      });
+      setResult(res);
+    } catch (err) {
+      setResult({ error: err.message });
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content cleanup-panel" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("cleanup.title")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="cleanup-content">
+          <div className="cleanup-info">
+            <p className="muted">{t("cleanup.description")}</p>
+            <div className="cleanup-stats">
+              <div className="stat">
+                <span className="stat-label">{t("cleanup.outputsFree")}:</span>
+                <span className="stat-value">
+                  {diagnostics?.storage?.outputs_disk?.free_gb} GB
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="cleanup-options">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={deletingAudio}
+                onChange={(e) => setDeletingAudio(e.target.checked)}
+              />
+              <span>{t("cleanup.deleteAudioFiles")}</span>
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={deletingHistory}
+                onChange={(e) => setDeletingHistory(e.target.checked)}
+              />
+              <span>{t("cleanup.deleteHistory")}</span>
+            </label>
+          </div>
+
+          {result && (
+            <div className={`cleanup-result ${result.error ? "error" : "success"}`}>
+              {result.error ? (
+                <p>{t("cleanup.error", { error: result.error })}</p>
+              ) : (
+                <div>
+                  <p>{t("cleanup.success")}</p>
+                  <ul>
+                    {result.deleted?.audio_files > 0 && (
+                      <li>{t("cleanup.deletedAudio", { count: result.deleted.audio_files })}</li>
+                    )}
+                    {result.deleted?.history_items > 0 && (
+                      <li>{t("cleanup.deletedHistory")}</li>
+                    )}
+                    {result.deleted?.models?.length > 0 && (
+                      <li>{t("cleanup.deletedModels", { models: result.deleted.models.join(", ") })}</li>
+                    )}
+                    {result.deleted?.audio_files === 0 && result.deleted?.history_items === 0 && !result.deleted?.models?.length && (
+                      <li>{t("cleanup.nothingDeleted")}</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="modal-footer">
+          <button className="ghost" onClick={onClose}>{t("cleanup.cancel")}</button>
+          <button
+            className="button button-danger"
+            onClick={handleCleanup}
+            disabled={cleaning || (!deletingAudio && !deletingHistory)}
+          >
+            {cleaning ? t("cleanup.cleaning") : t("cleanup.cleanup")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { t, lang, changeLanguage, loading: i18nLoading } = useTranslation();
 
@@ -786,6 +1360,19 @@ export default function App() {
   const [hfTokenInput, setHfTokenInput] = useState("");
   const [hfTokenMessage, setHfTokenMessage] = useState("");
   const [hfTokenSaving, setHfTokenSaving] = useState(false);
+  const [presets, setPresets] = useState({ tones: [], prompts: [], defaults: {} });
+  const [toneId, setToneId] = useState("");
+  const [promptId, setPromptId] = useState("");
+  const [showPresetsPanel, setShowPresetsPanel] = useState(false);
+  const [editingTone, setEditingTone] = useState(null);
+  const [editingPrompt, setEditingPrompt] = useState(null);
+  const [modelCapabilities, setModelCapabilities] = useState({ style: true, voice_prompt: true, voice_ref: false });
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [showDiagnosticsPanel, setShowDiagnosticsPanel] = useState(false);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [showFirstRunGuide, setShowFirstRunGuide] = useState(false);
+  const [showCleanupPanel, setShowCleanupPanel] = useState(false);
+  const [crashReports, setCrashReports] = useState(false);
 
   useEffect(() => {
     localStorage.clear();
@@ -869,6 +1456,42 @@ export default function App() {
     localStorage.setItem("oratioviva_quality_mode", qualityMode);
   }, [qualityMode]);
 
+  useEffect(() => {
+    if (toneId) localStorage.setItem("oratioviva_tone_id", toneId);
+    else localStorage.removeItem("oratioviva_tone_id");
+  }, [toneId]);
+
+  useEffect(() => {
+    if (promptId) localStorage.setItem("oratioviva_prompt_id", promptId);
+    else localStorage.removeItem("oratioviva_prompt_id");
+  }, [promptId]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedTone = localStorage.getItem("oratioviva_tone_id");
+      const savedPrompt = localStorage.getItem("oratioviva_prompt_id");
+      if (savedTone) setToneId(savedTone);
+      if (savedPrompt) setPromptId(savedPrompt);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentVoice?.model) {
+      fetchModelCapabilities(currentVoice.model)
+        .then(res => setModelCapabilities(res.capabilities || { style: true, voice_prompt: true, voice_ref: false }))
+        .catch(() => setModelCapabilities({ style: true, voice_prompt: true, voice_ref: false }));
+    }
+  }, [currentVoice?.model]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const hasSeenGuide = localStorage.getItem("oratioviva_has_seen_guide");
+      if (!hasSeenGuide && backendReady) {
+        setTimeout(() => setShowFirstRunGuide(true), 500);
+      }
+    }
+  }, [backendReady]);
+
   const checkBackend = useCallback(async () => {
     try {
       const base = await resolveApiBase();
@@ -913,8 +1536,19 @@ export default function App() {
       if (res) {
         setHfTokenStatus(res);
       }
+      const telemetry = await getTelemetrySettings();
+      setCrashReports(telemetry.crash_reports || false);
     } catch (e) {
       console.error("Failed to fetch settings:", e);
+    }
+  }, []);
+
+  const handleChangeCrashReports = useCallback(async (enabled) => {
+    setCrashReports(enabled);
+    try {
+      await setTelemetrySettings({ crash_reports: enabled });
+    } catch (e) {
+      console.error("Failed to save telemetry settings:", e);
     }
   }, []);
 
@@ -1030,6 +1664,25 @@ export default function App() {
       setAnalytics(res);
     } catch { /* noop */ }
   }
+
+  async function refreshPresets() {
+    try {
+      const res = await fetchPresets();
+      setPresets(res);
+      if (!toneId && res.defaults?.tone) {
+        setToneId(res.defaults.tone);
+      }
+      if (!promptId && res.defaults?.prompt) {
+        setPromptId(res.defaults.prompt);
+      }
+    } catch { /* noop */ }
+  }
+
+  useEffect(() => {
+    if (backendReady) {
+      refreshPresets();
+    }
+  }, [backendReady]);
 
   useEffect(() => {
     let timer;
@@ -1270,6 +1923,8 @@ export default function App() {
           voice_id: voiceId,
           speed,
           quality: qualityMode,
+          tone_id: toneId || undefined,
+          prompt_id: promptId || undefined,
           voice_prompt: voicePrompt || undefined,
           auto_punctuate: autoPunctuate,
           style: style || undefined,
@@ -1284,6 +1939,8 @@ export default function App() {
             voice_id: voiceId,
             speed,
             quality: qualityMode,
+            tone_id: toneId || undefined,
+            prompt_id: promptId || undefined,
             voice_prompt: voicePrompt || undefined,
             auto_punctuate: autoPunctuate,
             style: style || undefined,
@@ -1552,6 +2209,8 @@ export default function App() {
           onClearHfToken={handleClearHfToken}
           hfTokenMessage={hfTokenMessage}
           hfTokenSaving={hfTokenSaving}
+          crashReports={crashReports}
+          onChangeCrashReports={handleChangeCrashReports}
         />
       )}
 
@@ -1565,6 +2224,37 @@ export default function App() {
           }}
           onCancel={() => setShowLongAudioModal(false)}
           t={t}
+        />
+      )}
+
+      {showPresetsPanel && (
+        <PresetsPanel
+          t={t}
+          presets={presets}
+          onClose={() => setShowPresetsPanel(false)}
+          onRefresh={refreshPresets}
+        />
+      )}
+
+      {showFirstRunGuide && (
+        <FirstRunGuide
+          t={t}
+          onClose={() => setShowFirstRunGuide(false)}
+        />
+      )}
+
+      {showDiagnosticsPanel && (
+        <DiagnosticsPanel
+          t={t}
+          onClose={() => setShowDiagnosticsPanel(false)}
+        />
+      )}
+
+      {showCleanupPanel && (
+        <CleanupPanel
+          t={t}
+          onClose={() => setShowCleanupPanel(false)}
+          diagnostics={diagnostics}
         />
       )}
 
@@ -1584,6 +2274,12 @@ export default function App() {
           <span className={`badge ${currentModelReady ? "badge-ok" : "badge-warn"}`}>
             {currentModelReady ? t("toolbar.modelOk") : t("toolbar.modelMissing")}
           </span>
+          <button className="ghost" onClick={() => { setShowDiagnosticsPanel(true); }}>
+            {t("toolbar.diagnostics")}
+          </button>
+          <button className="ghost" onClick={() => { setShowCleanupPanel(true); }}>
+            {t("toolbar.cleanup")}
+          </button>
           <button className="ghost" onClick={() => { refreshModels(); refreshSettings(); setShowSettingsPanel(true); }}>
             {t("toolbar.settings")}
           </button>
@@ -1849,6 +2545,51 @@ export default function App() {
             </div>
 
             <div className="field">
+              <div className="row space" style={{ marginBottom: "0.5rem" }}>
+                <label className="label" style={{ marginBottom: 0 }}>{t("form.toneLabel")}</label>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={() => setShowPresetsPanel(true)}
+                >
+                  {t("form.managePresets")}
+                </button>
+              </div>
+              <select
+                className="input"
+                value={toneId}
+                onChange={(e) => setToneId(e.target.value)}
+              >
+                <option value="">{t("form.noTone")}</option>
+                {(presets.tones || []).filter(p => !p.category || p.category === "tts").map((tone) => (
+                  <option key={tone.id} value={tone.id}>
+                    {tone.name}{tone.is_custom ? " *" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label className="label">{t("form.promptLabel")}</label>
+              <select
+                className="input"
+                value={promptId}
+                onChange={(e) => setPromptId(e.target.value)}
+              >
+                <option value="">{t("form.noPrompt")}</option>
+                {(presets.prompts || []).filter(p => !p.category || p.category === "tts").map((prompt) => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {prompt.name}{prompt.is_custom ? " *" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {!modelCapabilities.style && (
+              <p className="muted">{t("form.toneNotSupported")}</p>
+            )}
+
+            <div className="field">
               <label className="label">{t("form.styleLabel")}</label>
               <input
                 className="input"
@@ -1898,7 +2639,18 @@ export default function App() {
                   </button>
                 )}
               </div>
+              {!modelCapabilities.voice_ref && voiceRef && (
+                <p className="warning">{t("safeguards.voiceRefNotSupported")}</p>
+              )}
             </div>
+
+            {!modelCapabilities.style && (style || toneId) && (
+              <p className="warning">{t("safeguards.styleNotSupported")}</p>
+            )}
+
+            {!modelCapabilities.voice_prompt && (voicePrompt || promptId) && (
+              <p className="warning">{t("safeguards.voicePromptNotSupported")}</p>
+            )}
 
             <div className="form-actions">
               <button

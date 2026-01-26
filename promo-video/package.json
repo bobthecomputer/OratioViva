@@ -1,0 +1,22 @@
+{
+  "name": "oratio-viva-promo-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "remotion studio",
+    "render": "remotion render OratioVivaPromo out/oratio-viva-promo.mp4 --codec=h264",
+    "render:portrait": "remotion render OratioVivaPromoPortrait out/oratio-viva-promo-9x16.mp4 --codec=h264"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "remotion": "^4.0.0",
+    "@remotion/cli": "^4.0.0",
+    "typescript": "^5.4.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@types/node": "^20.11.0"
+  }
+}

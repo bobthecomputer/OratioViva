@@ -1,0 +1,40 @@
+{
+  "brand": {
+    "name": "Oratio Viva",
+    "tagline": "Science, voiced.",
+    "url": "oratioviva.app"
+  },
+  "features": [
+    {
+      "title": "Notes → Voice",
+      "body": "Clear narration, fast."
+    },
+    {
+      "title": "Pacing Control",
+      "body": "Tempo and emphasis."
+    },
+    {
+      "title": "Export Ready",
+      "body": "MP3 + WAV."
+    }
+  ],
+  "assets": {
+    "logo": "assets/logo.png",
+    "screenshots": [
+      "assets/screenshot-1.png"
+    ],
+    "banners": [
+      "assets/banner-1.png"
+    ]
+  },
+  "audio": {
+    "voiceover": null
+  },
+  "video": {
+    "format": "landscape",
+    "durationSeconds": 20,
+    "fps": 30,
+    "width": 1920,
+    "height": 1080
+  }
+}

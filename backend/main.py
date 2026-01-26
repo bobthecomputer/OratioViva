@@ -9,7 +9,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import re
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -72,29 +72,63 @@ AUDIO_DIR = OUTPUT_DIR / "audio"
 HISTORY_PATH = OUTPUT_DIR / "history.json"
 JOBS_PATH = OUTPUT_DIR / "jobs.json"
 SETTINGS_PATH = OUTPUT_DIR / "settings.json"
+SETTINGS_VERSION = 1
+ERROR_LOG_PATH = OUTPUT_DIR / "error.log"
 
 
-def load_settings() -> Dict[str, str]:
+def log_error(message: str, exc: Optional[Exception] = None) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    error_line = f"[{timestamp}] {message}"
+    if exc:
+        error_line += f": {type(exc).__name__}: {str(exc)}"
+    try:
+        ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(ERROR_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(error_line + "\n")
+    except Exception:
+        pass
+
+
+def migrate_settings(data: Dict[str, Any], from_version: int) -> Dict[str, Any]:
+    if from_version < 1:
+        pass
+    return data
+
+
+def load_settings() -> Dict[str, Any]:
     if not SETTINGS_PATH.exists():
-        return {}
+        return {"_version": SETTINGS_VERSION}
     try:
         data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items() if v is not None}
+            current_version = data.get("_version", 0)
+            if current_version < SETTINGS_VERSION:
+                data = migrate_settings(data, current_version)
+                data["_version"] = SETTINGS_VERSION
+                save_settings(data)
+            return data
     except json.JSONDecodeError:
-        return {}
-    return {}
+        pass
+    return {"_version": SETTINGS_VERSION}
 
 
-def save_settings(settings: Dict[str, str]) -> None:
+def save_settings(settings: Dict[str, Any]) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    settings["_version"] = SETTINGS_VERSION
+    clean_settings = {k: v for k, v in settings.items() if v is not None}
     SETTINGS_PATH.write_text(
-        json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(clean_settings, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
 
 _settings = load_settings()
 _env_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-HF_TOKEN = _env_token or _settings.get("hf_token")
+_hf_token_from_settings = (
+    _settings.get("hf_token") if isinstance(_settings, dict) else None
+)
+HF_TOKEN = _env_token or (
+    _hf_token_from_settings if isinstance(_hf_token_from_settings, str) else None
+)
 if HF_TOKEN and not _env_token:
     os.environ.setdefault("HF_TOKEN", HF_TOKEN)
     os.environ.setdefault("HUGGINGFACEHUB_API_TOKEN", HF_TOKEN)
@@ -115,6 +149,531 @@ OPTIONAL_MODELS = {
     ).split(",")
     if m.strip()
 }
+
+PRESETS_PATH = OUTPUT_DIR / "presets.json"
+
+
+class TonePreset(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    style: Optional[str] = None
+    voice_prompt: Optional[str] = None
+    category: str = "tts"
+    is_default: bool = False
+
+
+class PromptPreset(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    style: Optional[str] = None
+    voice_prompt: Optional[str] = None
+    category: str = "tts"
+    is_default: bool = False
+
+
+DEFAULT_TONE_PRESETS = [
+    TonePreset(
+        id="neutral",
+        name="Neutral",
+        description="Standard, balanced delivery with natural prosody",
+        style="Neutral speaker, clear voice, studio quality. Natural pacing with proper breathing.",
+        voice_prompt="Neutral delivery, consistent volume, clear articulation, natural pauses.",
+        category="tts",
+        is_default=True,
+    ),
+    TonePreset(
+        id="expressive",
+        name="Expressive",
+        description="Animated, emotional delivery with dynamic variations",
+        style="Expressive speaker, emotional depth, dynamic tone variations, theatrical flair.",
+        voice_prompt="Warm, confident, steady pace, clear pauses after each sentence. Use emotional depth.",
+        category="tts",
+    ),
+    TonePreset(
+        id="calm",
+        name="Calm & Soothing",
+        description="Gentle, peaceful delivery with relaxed pacing",
+        style="Calm speaker, slow pace, gentle, soothing tone with soft dynamics.",
+        voice_prompt="Soft, soothing, relaxed breathing between phrases. Lower volume, gentle inflections.",
+        category="tts",
+    ),
+    TonePreset(
+        id="authoritative",
+        name="Authoritative",
+        description="Strong, confident delivery with commanding presence",
+        style="Authoritative speaker, strong presence, clear articulation, commanding tone.",
+        voice_prompt="Confident, authoritative, steady rhythm, emphasize key words, project power.",
+        category="tts",
+    ),
+    TonePreset(
+        id="news_anchor",
+        name="News Anchor",
+        description="Professional broadcast style for informative content",
+        style="Professional news anchor, neutral but engaging, broadcast-quality delivery.",
+        voice_prompt="Clear, professional, measured pace, proper enunciation, broadcast standards.",
+        category="tts",
+    ),
+    TonePreset(
+        id="storyteller",
+        name="Storyteller",
+        description="Engaging narrative voice for books and stories",
+        style="Warm narrator, engaging, brings stories to life with character.",
+        voice_prompt="Storytelling voice, varied pacing, slight dramatization, natural flow, character voices.",
+        category="tts",
+    ),
+    TonePreset(
+        id="suspenseful",
+        name="Suspenseful",
+        description="Tense, mysterious delivery for thrillers and horror",
+        style="Tense, suspenseful narrator, lowered voice, controlled tension.",
+        voice_prompt="Suspenseful, whispers, tense pauses, building dread, controlled breathing.",
+        category="tts",
+    ),
+    TonePreset(
+        id="whisper",
+        name="Whisper",
+        description="Intimate, quiet delivery for secrets or romance",
+        style="Intimate whisper, very soft, breathy, personal tone.",
+        voice_prompt="Whispered, soft, breathy, intimate, lowered volume throughout.",
+        category="tts",
+    ),
+    TonePreset(
+        id="cheerful",
+        name="Cheerful",
+        description="Happy, upbeat delivery with positive energy",
+        style="Cheerful speaker, bright tone, positive energy, warm smile in voice.",
+        voice_prompt="Happy, upbeat, bright tone, warm smile, energetic inflections.",
+        category="tts",
+    ),
+    TonePreset(
+        id="sad_melancholy",
+        name="Sad / Melancholy",
+        description="Somber, emotional delivery for grief or loss",
+        style="Somber speaker, lowered energy, emotional weight, gentle sorrow.",
+        voice_prompt="Sad, gentle sorrow, lowered energy, soft pauses, emotional weight.",
+        category="tts",
+    ),
+    TonePreset(
+        id="excited",
+        name="Excited",
+        description="Energetic, enthusiastic delivery for celebrations",
+        style="Excited speaker, high energy, enthusiastic, animated expressions.",
+        voice_prompt="Excited, enthusiastic, high energy, animated, exclamation marks for emphasis.",
+        category="tts",
+    ),
+    TonePreset(
+        id="sarcastic",
+        name="Sarcastic",
+        description="Dry humor with ironic delivery",
+        style="Sarcastic speaker, dry tone, ironic inflection, playful edge.",
+        voice_prompt="Sarcastic, dry humor, ironic tone, playful edge, timing is key.",
+        category="tts",
+    ),
+    TonePreset(
+        id="mysterious",
+        name="Mysterious",
+        description="Enigmatic delivery for mysteries and intrigue",
+        style="Mysterious narrator, low register, slow pacing, hidden depth.",
+        voice_prompt="Mysterious, low voice, slow pacing, enigmatic, draw out key words.",
+        category="tts",
+    ),
+]
+
+DEFAULT_PROMPT_PRESETS = [
+    PromptPreset(
+        id="default",
+        name="Default",
+        description="Standard voice direction without special effects",
+        voice_prompt=None,
+        category="tts",
+        is_default=True,
+    ),
+    PromptPreset(
+        id="warm_confident",
+        name="Warm & Confident",
+        description="Friendly, assured delivery with personal connection",
+        voice_prompt="Warm, confident, steady pace, clear pauses after each sentence. Friendly tone.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="soft_gentle",
+        name="Soft & Gentle",
+        description="Quiet, careful delivery for sensitive content",
+        voice_prompt="Soft, gentle, careful, relaxed breathing between phrases. Lower volume.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="energetic_upbeat",
+        name="Energetic & Upbeat",
+        description="Dynamic, lively delivery with high energy",
+        voice_prompt="Energetic, upbeat, lively, animated tone variations. Higher energy throughout.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="formal_professional",
+        name="Formal & Professional",
+        description="Business-appropriate delivery for corporate content",
+        voice_prompt="Formal, professional, clear articulation, measured pace, business-appropriate tone.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="casual_friendly",
+        name="Casual & Friendly",
+        description="Relaxed, conversational delivery for casual content",
+        voice_prompt="Casual, friendly, conversational, natural rhythm, like talking to a friend.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="with_laughs",
+        name="With Laughter",
+        description="Warm delivery with natural laughter breaks",
+        voice_prompt="Warm delivery with occasional [laughs], natural giggling, joyful tone.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="suspense_pause",
+        name="Suspenseful with Pauses",
+        description="Tense delivery with dramatic pauses for suspense",
+        voice_prompt="Suspenseful, use [pause] after key phrases, build tension, lower volume for effect.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="breathy_intimate",
+        name="Breathy & Intimate",
+        description="Close, personal delivery for romantic or secret content",
+        voice_prompt="Breathy, intimate, very soft, close to the listener, personal tone.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="character_voices",
+        name="Character Voices",
+        description="Multi-character dialogue with distinct voices",
+        voice_prompt="Character voices, distinct accents, [interrupting] for dialogue, different tones per speaker.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="with_sfx",
+        name="With Sound Effects",
+        description="Narration enhanced with environmental sounds",
+        voice_prompt="Include sound effects naturally: [door creaks], [footsteps], [thunder], [applause] as described.",
+        category="tts",
+    ),
+    PromptPreset(
+        id="singing_melodic",
+        name="Singing / Melodic",
+        description="Partial singing or melodic delivery",
+        voice_prompt="Singing quickly, melodic inflections, musical quality, blend speech and song.",
+        category="tts",
+    ),
+]
+
+DEFAULT_MUSIC_PRESETS = [
+    PromptPreset(
+        id="ambient_electronic",
+        name="Ambient Electronic",
+        description="Atmospheric electronic soundscapes for background",
+        style="Ambient electronic, ethereal pads, soft synthesizer textures, slow evolution.",
+        voice_prompt="Ambient electronic music, ethereal synthesizer pads, soft textures, slow evolving, no drums, peaceful atmosphere.",
+        category="music",
+    ),
+    PromptPreset(
+        id="upbeat_pop",
+        name="Upbeat Pop",
+        description="Catchy pop music with modern production",
+        style="Upbeat pop, bright melodies, 4/4 beat, modern production.",
+        voice_prompt="Upbeat pop song, bright synth melodies, steady 4/4 beat, modern production, catchy chorus, 120 BPM.",
+        category="music",
+    ),
+    PromptPreset(
+        id="cinematic_orchestral",
+        name="Cinematic Orchestral",
+        description="Full orchestral score for film and video",
+        style="Cinematic orchestral, full strings, brass, percussion.",
+        voice_prompt="Cinematic orchestral music, full strings section, brass fanfare, timpani drums, dramatic crescendo, film score quality.",
+        category="music",
+    ),
+    PromptPreset(
+        id="lofi_chill",
+        name="Lo-Fi Chill",
+        description="Relaxed lo-fi beats for study or focus",
+        style="Lo-fi chill, warm vinyl texture, slow beat.",
+        voice_prompt="Lo-fi chillhop, warm vinyl texture, soft drums, jazz samples, relaxed vibe, 80 BPM, perfect for studying.",
+        category="music",
+    ),
+    PromptPreset(
+        id="rock_energetic",
+        name="Energetic Rock",
+        description="High-energy rock with guitars and drums",
+        style="Energetic rock, distorted guitars, driving drums.",
+        voice_prompt="Energetic rock song, distorted electric guitars, powerful drums, anthemic chorus, driving rhythm, 140 BPM.",
+        category="music",
+    ),
+    PromptPreset(
+        id="jazz_smooth",
+        name="Smooth Jazz",
+        description="Relaxed jazz with saxophone melodies",
+        style="Smooth jazz, saxophone, soft rhythm section.",
+        voice_prompt="Smooth jazz, saxophone melody, soft piano chords, light brushed drums, relaxed evening vibe, 90 BPM.",
+        category="music",
+    ),
+    PromptPreset(
+        id="classical_piano",
+        name="Classical Piano",
+        description="Solo piano pieces in classical style",
+        style="Classical piano, melodic, expressive.",
+        voice_prompt="Classical piano solo, melodic and expressive, romantic era style, gentle dynamics, solo instrument.",
+        category="music",
+    ),
+    PromptPreset(
+        id="hiphop_beat",
+        name="Hip-Hop Beat",
+        description="Modern hip-hop production with bass",
+        style="Hip-hop, heavy bass, crisp drums.",
+        voice_prompt="Hip-hop instrumental, heavy bass, crisp snare drums, atmospheric samples, modern production, 90 BPM.",
+        category="music",
+    ),
+    PromptPreset(
+        id="nature_soundscape",
+        name="Nature Soundscape",
+        description="Organic sounds with nature recordings",
+        style="Nature sounds, organic textures, environmental recordings.",
+        voice_prompt="Nature soundscape, gentle rain, birds chirping, rustling leaves, peaceful forest ambience, no music.",
+        category="music",
+    ),
+    PromptPreset(
+        id="dubstep_electronic",
+        name="Dubstep / Electronic",
+        description="Heavy bass drops and electronic rhythms",
+        style="Dubstep, wobble bass, electronic rhythms.",
+        voice_prompt="Dubstep electronic track, wobble bass, heavy drop, electronic drums, aggressive energy, 140 BPM.",
+        category="music",
+    ),
+]
+
+DEFAULT_SFX_PRESETS = [
+    PromptPreset(
+        id="nature_ambience",
+        name="Nature Ambience",
+        description="Natural environmental sounds for background",
+        style="Natural, organic, environmental.",
+        voice_prompt="Nature ambience: gentle forest with birds, rustling leaves, distant wind, peaceful atmosphere.",
+        category="sfx",
+    ),
+    PromptPreset(
+        id="urban_ambience",
+        name="Urban Ambience",
+        description="City and urban environmental sounds",
+        style="Urban, city, environmental.",
+        voice_prompt="City ambience: distant traffic, people talking, occasional car horns, urban atmosphere.",
+        category="sfx",
+    ),
+    PromptPreset(
+        id="ui_sounds",
+        name="UI / Interface Sounds",
+        description="Click, whoosh, and interface sounds",
+        style="Clean, modern, interface-appropriate.",
+        voice_prompt="UI sound effects: clean click, soft whoosh, subtle chime for success notification.",
+        category="sfx",
+    ),
+    PromptPreset(
+        id="horror_sfx",
+        name="Horror Sounds",
+        description="Spooky and frightening sound effects",
+        style="Dark, tense, unsettling.",
+        voice_prompt="Horror ambience: creaking door, distant footsteps, wind howl, tense atmosphere, unsettling.",
+        category="sfx",
+    ),
+    PromptPreset(
+        id="sci_fi_sfx",
+        name="Sci-Fi Sounds",
+        description="Futuristic and sci-fi sound effects",
+        style="Futuristic, technological, clean.",
+        voice_prompt="Sci-fi ambience: subtle computer hum, data processing sounds, futuristic interface beeps.",
+        category="sfx",
+    ),
+]
+
+
+def load_presets() -> Dict[str, Dict[str, dict]]:
+    if not PRESETS_PATH.exists():
+        return {"tones": {}, "prompts": {}}
+    try:
+        data = json.loads(PRESETS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and "tones" in data and "prompts" in data:
+            return data
+    except json.JSONDecodeError:
+        pass
+    return {"tones": {}, "prompts": {}}
+
+
+def save_presets(presets: Dict[str, Dict[str, dict]]) -> None:
+    PRESETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PRESETS_PATH.write_text(
+        json.dumps(presets, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def get_preset_for_model(
+    preset_id: str,
+    preset_type: str,
+    model_name: Optional[str] = None,
+) -> Optional[dict]:
+    presets = load_presets()
+    collection = presets.get(preset_type, {})
+    if preset_id in collection:
+        preset = collection[preset_id]
+        if model_name and "overrides" in preset and model_name in preset["overrides"]:
+            return preset["overrides"][model_name]
+        return preset
+    return None
+
+
+def merge_preset_with_overrides(
+    preset: Optional[dict],
+    model_name: Optional[str] = None,
+) -> Optional[dict]:
+    if not preset:
+        return None
+    result = preset.copy()
+    if model_name and "overrides" in result and model_name in result["overrides"]:
+        override = result["overrides"][model_name]
+        if override:
+            result.update(override)
+    return result
+
+
+MODEL_CAPABILITIES = {
+    "parler-tts/parler-tts-mini-v1.1": {
+        "style": True,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "suno/bark-small": {
+        "style": True,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "microsoft/speecht5_tts": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": True,
+        "category": "tts",
+    },
+    "facebook/mms-tts-eng": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "nari-labs/Dia2-2B": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice": {
+        "style": True,
+        "voice_prompt": False,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "FunAudioLLM/Fun-CosyVoice3-0.5B-2512": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": True,
+        "category": "tts",
+    },
+    "coqui/XTTS-v2": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": True,
+        "category": "tts",
+    },
+    "SWivid/F5-TTS": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": True,
+        "category": "tts",
+    },
+    "shininglies/Dia2-2B": {
+        "style": False,
+        "voice_prompt": False,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "stable-audio/stable-audio": {
+        "style": False,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "music",
+    },
+    "stabilityai/stable-audio-2.5": {
+        "style": False,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "music",
+    },
+    "facebook/musicgen": {
+        "style": False,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "music",
+    },
+    "google/musiclm": {
+        "style": False,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "music",
+    },
+    "meta/musicgen": {
+        "style": False,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "music",
+    },
+    "elevenlabs/eleven-tts": {
+        "style": True,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "elevenlabs/eleven-multilingual-v2": {
+        "style": True,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "openai/audio-generation": {
+        "style": True,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "tts",
+    },
+    "kokoro": {
+        "style": True,
+        "voice_prompt": True,
+        "voice_ref": False,
+        "category": "tts",
+    },
+}
+
+
+def get_model_capabilities(model_name: Optional[str] = None) -> Dict[str, Any]:
+    if not model_name:
+        return {
+            "style": True,
+            "voice_prompt": True,
+            "voice_ref": False,
+            "category": "tts",
+        }
+    for pattern, caps in MODEL_CAPABILITIES.items():
+        if pattern.lower() in model_name.lower():
+            return caps
+    return {"style": True, "voice_prompt": True, "voice_ref": False, "category": "tts"}
 
 
 def find_bundled_models() -> Optional[Path]:
@@ -149,6 +708,14 @@ class SynthesisRequest(BaseModel):
     speed: float = Field(1.0, ge=0.5, le=2.0)
     quality: Optional[str] = Field(
         None, description="Optional quality mode: fast | balanced | quality."
+    )
+    tone_id: Optional[str] = Field(
+        None,
+        description="Optional tone preset ID to apply.",
+    )
+    prompt_id: Optional[str] = Field(
+        None,
+        description="Optional voice direction preset ID to apply.",
     )
     voice_prompt: Optional[str] = Field(
         None,
@@ -207,6 +774,28 @@ class SettingsTokenRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None, description="Hugging Face access token (stored locally)."
     )
+
+
+class PresetRequest(BaseModel):
+    id: str = Field(..., description="Unique preset ID")
+    name: str = Field(..., description="Preset display name")
+    description: Optional[str] = Field(None, description="Preset description")
+    style: Optional[str] = Field(None, description="Style prompt text")
+    voice_prompt: Optional[str] = Field(None, description="Voice direction text")
+    overrides: Optional[Dict[str, Dict[str, Optional[str]]]] = Field(
+        None,
+        description="Per-model overrides {model_name: {style/voice_prompt: value}}",
+    )
+
+
+class PresetDeleteRequest(BaseModel):
+    id: str = Field(..., description="Preset ID to delete")
+
+
+class PresetsResponse(BaseModel):
+    tones: List[dict]
+    prompts: List[dict]
+    defaults: Dict[str, str]
 
 
 def ensure_directories() -> None:
@@ -282,7 +871,9 @@ def get_hf_token_status() -> Dict[str, str | bool]:
     return {"hf_token_set": bool(token), "hf_token_source": source}
 
 
-def merge_style_prompt(style: Optional[str], voice_prompt: Optional[str]) -> Optional[str]:
+def merge_style_prompt(
+    style: Optional[str], voice_prompt: Optional[str]
+) -> Optional[str]:
     style_val = (style or "").strip()
     prompt_val = (voice_prompt or "").strip()
     if style_val and prompt_val:
@@ -423,6 +1014,184 @@ def settings_token(body: SettingsTokenRequest):
     return {"status": "ok", "hf_token_set": False}
 
 
+class TelemetrySettingsRequest(BaseModel):
+    crash_reports: Optional[bool] = None
+
+
+@app.get("/settings/telemetry")
+def get_telemetry_settings():
+    settings = load_settings()
+    return {
+        "crash_reports": settings.get("crash_reports", False),
+    }
+
+
+@app.post("/settings/telemetry")
+def set_telemetry_settings(body: TelemetrySettingsRequest):
+    settings = load_settings()
+    if body.crash_reports is not None:
+        settings["crash_reports"] = body.crash_reports
+    save_settings(settings)
+    return {"status": "ok", "crash_reports": settings.get("crash_reports", False)}
+
+
+@app.get("/presets")
+def list_presets():
+    presets = load_presets()
+    tones = presets.get("tones", {})
+    prompts = presets.get("prompts", {})
+
+    def preset_to_dict(p):
+        if hasattr(p, "model_dump"):
+            p = p.model_dump()
+        elif isinstance(p, dict):
+            p = dict(p)
+        else:
+            p = {
+                "id": p.id,
+                "name": p.name,
+                "description": p.description,
+                "style": p.style,
+                "voice_prompt": p.voice_prompt,
+                "category": getattr(p, "category", "tts"),
+                "is_default": p.is_default,
+            }
+        if "is_default" not in p:
+            p["is_default"] = False
+        if "category" not in p:
+            p["category"] = "tts"
+        return p
+
+    default_tone_ids = [p.id for p in DEFAULT_TONE_PRESETS if p.is_default]
+    default_prompt_ids = [p.id for p in DEFAULT_PROMPT_PRESETS if p.is_default]
+    default_music_ids = [p.id for p in DEFAULT_MUSIC_PRESETS if p.is_default]
+    default_sfx_ids = [p.id for p in DEFAULT_SFX_PRESETS if p.is_default]
+
+    all_tones = [preset_to_dict(p) for p in DEFAULT_TONE_PRESETS] + [
+        preset_to_dict(p) for p in tones.values()
+    ]
+    all_prompts = [preset_to_dict(p) for p in DEFAULT_PROMPT_PRESETS] + [
+        preset_to_dict(p) for p in prompts.values()
+    ]
+    all_music = [preset_to_dict(p) for p in DEFAULT_MUSIC_PRESETS]
+    all_sfx = [preset_to_dict(p) for p in DEFAULT_SFX_PRESETS]
+
+    return {
+        "tones": [
+            {
+                **p,
+                "is_custom": p["id"] not in default_tone_ids,
+            }
+            for p in all_tones
+            if p["id"] not in default_tone_ids or p.get("is_default")
+        ],
+        "prompts": [
+            {
+                **p,
+                "is_custom": p["id"] not in default_prompt_ids,
+            }
+            for p in all_prompts
+            if p["id"] not in default_prompt_ids or p.get("is_default")
+        ],
+        "music": [
+            {
+                **p,
+                "is_custom": False,
+            }
+            for p in all_music
+        ],
+        "sfx": [
+            {
+                **p,
+                "is_custom": False,
+            }
+            for p in all_sfx
+        ],
+        "defaults": {
+            "tone": default_tone_ids[0] if default_tone_ids else "neutral",
+            "prompt": default_prompt_ids[0] if default_prompt_ids else "default",
+        },
+        "categories": {
+            "tts": "Voice / Speech",
+            "music": "Music Generation",
+            "sfx": "Sound Effects",
+        },
+    }
+
+
+@app.post("/presets/tones")
+def save_tone_preset(body: PresetRequest):
+    presets = load_presets()
+    if "tones" not in presets:
+        presets["tones"] = {}
+    presets["tones"][body.id] = {
+        "id": body.id,
+        "name": body.name,
+        "description": body.description,
+        "style": body.style,
+        "voice_prompt": body.voice_prompt,
+        "overrides": body.overrides or {},
+    }
+    save_presets(presets)
+    return {"status": "ok", "id": body.id}
+
+
+@app.delete("/presets/tones/{preset_id}")
+def delete_tone_preset(preset_id: str):
+    presets = load_presets()
+    if "tones" not in presets:
+        return {"status": "error", "message": "No custom presets found"}
+
+    default_ids = [p.id for p in DEFAULT_TONE_PRESETS]
+    if preset_id in default_ids:
+        return {"status": "error", "message": "Cannot delete default presets"}
+
+    if preset_id in presets["tones"]:
+        del presets["tones"][preset_id]
+        save_presets(presets)
+        return {"status": "ok", "id": preset_id}
+    return {"status": "error", "message": "Preset not found"}
+
+
+@app.post("/presets/prompts")
+def save_prompt_preset(body: PresetRequest):
+    presets = load_presets()
+    if "prompts" not in presets:
+        presets["prompts"] = {}
+    presets["prompts"][body.id] = {
+        "id": body.id,
+        "name": body.name,
+        "description": body.description,
+        "style": body.style,
+        "voice_prompt": body.voice_prompt,
+        "overrides": body.overrides or {},
+    }
+    save_presets(presets)
+    return {"status": "ok", "id": body.id}
+
+
+@app.delete("/presets/prompts/{preset_id}")
+def delete_prompt_preset(preset_id: str):
+    presets = load_presets()
+    if "prompts" not in presets:
+        return {"status": "error", "message": "No custom presets found"}
+
+    default_ids = [p.id for p in DEFAULT_PROMPT_PRESETS]
+    if preset_id in default_ids:
+        return {"status": "error", "message": "Cannot delete default presets"}
+
+    if preset_id in presets["prompts"]:
+        del presets["prompts"][preset_id]
+        save_presets(presets)
+        return {"status": "ok", "id": preset_id}
+    return {"status": "error", "message": "Preset not found"}
+
+
+@app.get("/presets/model-capabilities")
+def get_model_capabilities_endpoint(model_name: Optional[str] = None):
+    return {"capabilities": get_model_capabilities(model_name)}
+
+
 @app.get("/voices")
 def list_voices():
     return {"voices": tts_service.list_voices()}
@@ -559,6 +1328,134 @@ def analytics():
     }
 
 
+@app.get("/diagnostics")
+def diagnostics():
+    import shutil
+    import platform
+
+    def get_disk_info(path):
+        try:
+            total, used, free = shutil.disk_usage(str(path))
+            return {
+                "total_bytes": total,
+                "used_bytes": used,
+                "free_bytes": free,
+                "total_gb": round(total / (1024**3), 2),
+                "free_gb": round(free / (1024**3), 2),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_python_info():
+        return {
+            "version": platform.python_version(),
+            "executable": sys.executable,
+        }
+
+    def get_last_error():
+        error_log = OUTPUT_DIR / "error.log"
+        if error_log.exists():
+            try:
+                lines = error_log.read_text(encoding="utf-8").strip().split("\n")
+                return lines[-20:] if len(lines) > 20 else lines
+            except Exception:
+                pass
+        return []
+
+    outputs_disk = get_disk_info(OUTPUT_DIR)
+    models_disk = get_disk_info(MODELS_DIR)
+
+    settings = load_settings()
+
+    return {
+        "backend": {
+            "status": "healthy",
+            "python": get_python_info(),
+            "platform": platform.system(),
+        },
+        "storage": {
+            "outputs_dir": str(OUTPUT_DIR),
+            "models_dir": str(MODELS_DIR),
+            "outputs_disk": outputs_disk,
+            "models_disk": models_disk,
+        },
+        "settings": {
+            "hf_token_set": bool(settings.get("hf_token")),
+            "hf_token_source": settings.get("hf_token_source", "none"),
+            "provider": tts_service.current_provider(),
+        },
+        "models": {
+            "available": [s.id for s in model_manager.status() if s.exists],
+            "downloading": model_manager.downloading,
+        },
+        "last_errors": get_last_error(),
+    }
+
+
+@app.get("/diagnostics")
+def diagnostics():
+    import shutil
+    import platform
+
+    def get_disk_info(path):
+        try:
+            total, used, free = shutil.disk_usage(str(path))
+            return {
+                "total_bytes": total,
+                "used_bytes": used,
+                "free_bytes": free,
+                "total_gb": round(total / (1024**3), 2),
+                "free_gb": round(free / (1024**3), 2),
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_python_info():
+        return {
+            "version": platform.python_version(),
+            "executable": sys.executable,
+        }
+
+    def get_last_error():
+        error_log = OUTPUT_DIR / "error.log"
+        if error_log.exists():
+            try:
+                lines = error_log.read_text(encoding="utf-8").strip().split("\n")
+                return lines[-20:] if len(lines) > 20 else lines
+            except Exception:
+                pass
+        return []
+
+    outputs_disk = get_disk_info(OUTPUT_DIR)
+    models_disk = get_disk_info(MODELS_DIR)
+
+    settings = load_settings()
+
+    return {
+        "backend": {
+            "status": "healthy",
+            "python": get_python_info(),
+            "platform": platform.system(),
+        },
+        "storage": {
+            "outputs_dir": str(OUTPUT_DIR),
+            "models_dir": str(MODELS_DIR),
+            "outputs_disk": outputs_disk,
+            "models_disk": models_disk,
+        },
+        "settings": {
+            "hf_token_set": bool(settings.get("hf_token")),
+            "hf_token_source": settings.get("hf_token_source", "none"),
+            "provider": tts_service.current_provider(),
+        },
+        "models": {
+            "available": [s.id for s in model_manager.status() if s.exists],
+            "downloading": model_manager.downloading,
+        },
+        "last_errors": get_last_error(),
+    }
+
+
 def _record_history(
     result, text: str, generation_seconds: Optional[float] = None
 ) -> None:
@@ -586,6 +1483,8 @@ def _run_job(
     voice_id: str,
     speed: float,
     quality: Optional[str],
+    tone_id: Optional[str],
+    prompt_id: Optional[str],
     style: Optional[str],
     voice_ref: Optional[str],
 ) -> JobStatus:
@@ -609,6 +1508,8 @@ def _run_job(
             voice_id=voice_id,
             speed=speed,
             quality=quality,
+            tone_id=tone_id,
+            prompt_id=prompt_id,
             style=style,
             voice_ref=voice_ref,
             job_id=job_id,
@@ -668,6 +1569,8 @@ def synthesize(
             request.voice_id,
             request.speed,
             request.quality,
+            request.tone_id,
+            request.prompt_id,
             style,
             request.voice_ref,
         )
@@ -681,6 +1584,8 @@ def synthesize(
         request.voice_id,
         request.speed,
         request.quality,
+        request.tone_id,
+        request.prompt_id,
         style,
         request.voice_ref,
     )
@@ -745,10 +1650,47 @@ def batch_delete_history(body: BatchDeleteRequest):
     return {"status": "ok", "deleted": deleted}
 
 
+class CleanupRequest(BaseModel):
+    delete_audio: bool = True
+    delete_history: bool = False
+    delete_models: Optional[List[str]] = None
+
+
 @app.post("/maintenance/cleanup")
-def cleanup_endpoint():
-    summary = run_from_env(AUDIO_DIR, HISTORY_PATH)
-    return {"status": "ok", "cleanup": summary}
+def cleanup_endpoint(body: CleanupRequest):
+    import shutil
+
+    deleted = {"audio_files": 0, "history_items": 0, "models": []}
+
+    if body.delete_audio and AUDIO_DIR.exists():
+        try:
+            for f in AUDIO_DIR.glob("*.wav"):
+                f.unlink()
+                deleted["audio_files"] += 1
+        except Exception as e:
+            pass
+
+    if body.delete_history and HISTORY_PATH.exists():
+        try:
+            HISTORY_PATH.unlink()
+            deleted["history_items"] = 1
+        except Exception as e:
+            pass
+
+    if body.delete_models:
+        for model_key in body.delete_models:
+            from backend.models import MODEL_ALIASES
+
+            repo_id = MODEL_ALIASES.get(model_key, model_key)
+            model_dir = MODELS_DIR / repo_id.replace("/", "_")
+            if model_dir.exists():
+                try:
+                    shutil.rmtree(model_dir)
+                    deleted["models"].append(model_key)
+                except Exception:
+                    pass
+
+    return {"status": "ok", "deleted": deleted}
 
 
 @app.post("/export/zip")
@@ -769,10 +1711,12 @@ def export_zip(body: ExportRequest):
 
 
 class LongAudioRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=MAX_LONG_TEXT_LENGTH)
     voice_id: str = Field("parler_en_neutral")
     speed: float = Field(1.0, ge=0.5, le=2.0)
     quality: Optional[str] = Field(None)
+    tone_id: Optional[str] = Field(None)
+    prompt_id: Optional[str] = Field(None)
     voice_prompt: Optional[str] = Field(None)
     auto_punctuate: bool = Field(False)
     style: Optional[str] = Field(None)
@@ -803,6 +1747,8 @@ def synthesize_long(
         request.voice_id,
         request.speed,
         request.quality,
+        request.tone_id,
+        request.prompt_id,
         style,
         request.voice_ref,
         request.chunk_size,
@@ -851,6 +1797,8 @@ def _run_long_job(
     voice_id: str,
     speed: float,
     quality: Optional[str],
+    tone_id: Optional[str],
+    prompt_id: Optional[str],
     style: Optional[str],
     voice_ref: Optional[str],
     chunk_size: int,
@@ -986,6 +1934,8 @@ def _run_long_job(
                         voice_id=voice_id,
                         speed=speed,
                         quality=quality,
+                        tone_id=tone_id,
+                        prompt_id=prompt_id,
                         style=style,
                         voice_ref=voice_ref,
                         job_id=cid,
@@ -1020,6 +1970,8 @@ def _run_long_job(
                         voice_id=voice_id,
                         speed=speed,
                         quality=quality,
+                        tone_id=tone_id,
+                        prompt_id=prompt_id,
                         style=style,
                         voice_ref=voice_ref,
                         job_id=cid,
