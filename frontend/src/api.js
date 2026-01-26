@@ -128,6 +128,17 @@ export async function fetchAnalytics() {
   return jsonFetch("/analytics");
 }
 
+export async function fetchSettings() {
+  return jsonFetch("/settings");
+}
+
+export async function saveHfToken(token) {
+  return jsonFetch("/settings/token", {
+    method: "POST",
+    body: JSON.stringify({ hf_token: token }),
+  });
+}
+
 export async function deleteHistory(jobId) {
   const base = await resolveApiBase();
   const resp = await fetch(`${base}/history/${jobId}`, { method: "DELETE" });

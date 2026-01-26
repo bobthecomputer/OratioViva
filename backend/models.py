@@ -425,7 +425,7 @@ class ModelManager:
                 )
 
                 if not retryable or attempt == max_attempts:
-                    raise
+                    raise e
 
                 if error_type == "ssl_error":
                     os.environ.pop("SSL_CERT_FILE", None)

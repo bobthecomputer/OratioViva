@@ -70,8 +70,33 @@ if _ca_bundle and Path(_ca_bundle).exists():
 AUDIO_DIR = OUTPUT_DIR / "audio"
 HISTORY_PATH = OUTPUT_DIR / "history.json"
 JOBS_PATH = OUTPUT_DIR / "jobs.json"
+SETTINGS_PATH = OUTPUT_DIR / "settings.json"
 
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+
+def load_settings() -> Dict[str, str]:
+    if not SETTINGS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items() if v is not None}
+    except json.JSONDecodeError:
+        return {}
+    return {}
+
+
+def save_settings(settings: Dict[str, str]) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(
+        json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+_settings = load_settings()
+_env_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+HF_TOKEN = _env_token or _settings.get("hf_token")
+if HF_TOKEN and not _env_token:
+    os.environ.setdefault("HF_TOKEN", HF_TOKEN)
+    os.environ.setdefault("HUGGINGFACEHUB_API_TOKEN", HF_TOKEN)
 # Stub mode should be an explicit user choice.
 USE_STUB = os.getenv("ORATIO_TTS_STUB", "0") == "1"
 MAX_JOBS = int(os.getenv("ORATIO_JOBS_MAX", "300"))
@@ -121,6 +146,9 @@ class SynthesisRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     voice_id: str = Field("parler_en_neutral")
     speed: float = Field(1.0, ge=0.5, le=2.0)
+    quality: Optional[str] = Field(
+        None, description="Optional quality mode: fast | balanced | quality."
+    )
     style: Optional[str] = Field(
         None,
         description="Optional style/prompt (used for Parler or other style-aware models).",
@@ -163,6 +191,12 @@ class BatchDeleteRequest(BaseModel):
 class ModelDownloadRequest(BaseModel):
     models: Optional[List[str]] = Field(
         None, description="Optional list of model aliases/repo_ids to download."
+    )
+
+
+class SettingsTokenRequest(BaseModel):
+    hf_token: Optional[str] = Field(
+        None, description="Hugging Face access token (stored locally)."
     )
 
 
@@ -226,6 +260,19 @@ def collect_audio_files(job_ids: List[str]) -> List[Path]:
     return selected
 
 
+def get_hf_token_status() -> Dict[str, str | bool]:
+    env_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    saved_token = load_settings().get("hf_token")
+    token = env_token or saved_token
+    if env_token:
+        source = "env"
+    elif saved_token:
+        source = "saved"
+    else:
+        source = "none"
+    return {"hf_token_set": bool(token), "hf_token_source": source}
+
+
 app = FastAPI(title="OratioViva API", version="0.6.6")
 
 app.add_middleware(
@@ -273,6 +320,33 @@ def health():
         "history_items": len(load_history()),
         "jobs": len(job_store.list(limit=9999)),
     }
+
+
+@app.get("/settings")
+def settings_status():
+    return get_hf_token_status()
+
+
+@app.post("/settings/token")
+def settings_token(body: SettingsTokenRequest):
+    token = (body.hf_token or "").strip()
+    settings = load_settings()
+
+    if token:
+        settings["hf_token"] = token
+        save_settings(settings)
+        model_manager.token = token
+        os.environ["HF_TOKEN"] = token
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
+        return {"status": "ok", "hf_token_set": True}
+
+    if "hf_token" in settings:
+        settings.pop("hf_token", None)
+        save_settings(settings)
+    model_manager.token = None
+    os.environ.pop("HF_TOKEN", None)
+    os.environ.pop("HUGGINGFACEHUB_API_TOKEN", None)
+    return {"status": "ok", "hf_token_set": False}
 
 
 @app.get("/voices")
@@ -437,6 +511,7 @@ def _run_job(
     text: str,
     voice_id: str,
     speed: float,
+    quality: Optional[str],
     style: Optional[str],
     voice_ref: Optional[str],
 ) -> JobStatus:
@@ -459,6 +534,7 @@ def _run_job(
             text=text,
             voice_id=voice_id,
             speed=speed,
+            quality=quality,
             style=style,
             voice_ref=voice_ref,
             job_id=job_id,
@@ -514,6 +590,7 @@ def synthesize(
             text,
             request.voice_id,
             request.speed,
+            request.quality,
             request.style,
             request.voice_ref,
         )
@@ -522,7 +599,13 @@ def synthesize(
         return JobStatusResponse(**job.__dict__)
 
     job = _run_job(
-        job_id, text, request.voice_id, request.speed, request.style, request.voice_ref
+        job_id,
+        text,
+        request.voice_id,
+        request.speed,
+        request.quality,
+        request.style,
+        request.voice_ref,
     )
     return JobStatusResponse(**job.__dict__)
 
@@ -612,6 +695,7 @@ class LongAudioRequest(BaseModel):
     text: str = Field(..., min_length=1)
     voice_id: str = Field("parler_en_neutral")
     speed: float = Field(1.0, ge=0.5, le=2.0)
+    quality: Optional[str] = Field(None)
     style: Optional[str] = Field(None)
     voice_ref: Optional[str] = Field(None)
     chunk_size: int = Field(2000, ge=500, le=12000)
@@ -636,6 +720,7 @@ def synthesize_long(
         text,
         request.voice_id,
         request.speed,
+        request.quality,
         request.style,
         request.voice_ref,
         request.chunk_size,
@@ -683,6 +768,7 @@ def _run_long_job(
     text: str,
     voice_id: str,
     speed: float,
+    quality: Optional[str],
     style: Optional[str],
     voice_ref: Optional[str],
     chunk_size: int,
@@ -709,13 +795,14 @@ def _run_long_job(
         total_chunks = len(chunks)
 
         if total_chunks == 1:
-            return _run_job(job_id, text, voice_id, speed, style, voice_ref)
+            return _run_job(job_id, text, voice_id, speed, quality, style, voice_ref)
 
         from backend.tts import VOICE_BY_ID
 
         voice = VOICE_BY_ID.get(voice_id)
         model_id = (voice.model or "").lower() if voice else ""
         is_qwen = "qwen3-tts" in model_id
+        is_dia2 = "dia2" in model_id
 
         chunk_job_ids = []
         for i, chunk in enumerate(chunks):
@@ -734,6 +821,8 @@ def _run_long_job(
             source=f"Processing {total_chunks} chunks ({'parallel' if parallel else 'sequential'})",
         )
 
+        valid_results = None
+
         if is_qwen:
             try:
                 results = tts_service.synthesize_qwen3_customvoice_batch(
@@ -742,6 +831,7 @@ def _run_long_job(
                     job_ids=chunk_job_ids,
                     speed=speed,
                     style=style,
+                    quality=quality,
                 )
                 for idx, result in enumerate(results):
                     job_store.update(
@@ -755,10 +845,53 @@ def _run_long_job(
                     )
                 valid_results = results
             except Exception as exc:
-                for cid in chunk_job_ids:
-                    job_store.update(cid, status="failed", error=str(exc))
-                return job_store.update(job_id, status="failed", error=str(exc))
-        elif parallel:
+                job_store.update(
+                    job_id,
+                    status="running",
+                    source=(
+                        "Qwen batch failed, falling back to sequential: "
+                        f"{str(exc)[:160]}"
+                    ),
+                )
+                valid_results = None
+        elif is_dia2:
+            try:
+                job_store.update(
+                    job_id,
+                    status="running",
+                    source=f"Processing {total_chunks} chunks (dia2 batch)",
+                )
+                results = tts_service.synthesize_dia2_batch(
+                    chunks=chunks,
+                    voice_id=voice_id,
+                    job_ids=chunk_job_ids,
+                    speed=speed,
+                    quality=quality,
+                )
+                for idx, result in enumerate(results):
+                    job_store.update(
+                        chunk_job_ids[idx],
+                        status="succeeded",
+                        audio_url=result.audio_url,
+                        duration_seconds=result.duration_seconds,
+                        model=result.model,
+                        voice_id=result.voice_id,
+                        source=f"chunk {idx + 1}/{total_chunks}",
+                    )
+                valid_results = results
+            except Exception as exc:
+                # Fall back to sequential chunks if batch fails.
+                job_store.update(
+                    job_id,
+                    status="running",
+                    source=(
+                        "Dia2 batch failed, falling back to sequential: "
+                        f"{str(exc)[:160]}"
+                    ),
+                )
+                valid_results = None
+
+        if valid_results is None and parallel:
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
 
@@ -770,6 +903,7 @@ def _run_long_job(
                         text=chunk_text,
                         voice_id=voice_id,
                         speed=speed,
+                        quality=quality,
                         style=style,
                         voice_ref=voice_ref,
                         job_id=cid,
@@ -793,7 +927,7 @@ def _run_long_job(
                 results = list(executor.map(process_chunk, range(total_chunks)))
 
             valid_results = [r for r in results if r is not None]
-        else:
+        elif valid_results is None:
             valid_results = []
             for i, chunk in enumerate(chunks):
                 cid = chunk_job_ids[i]
@@ -803,6 +937,7 @@ def _run_long_job(
                         text=chunk,
                         voice_id=voice_id,
                         speed=speed,
+                        quality=quality,
                         style=style,
                         voice_ref=voice_ref,
                         job_id=cid,

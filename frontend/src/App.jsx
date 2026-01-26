@@ -16,9 +16,11 @@ import {
   fetchJob,
   fetchJobs,
   fetchModelStatus,
+  fetchSettings,
   fetchVoices,
   getApiBase,
   resolveApiBase,
+  saveHfToken,
 } from "./api";
 import { useTranslation } from "./i18n";
 
@@ -522,6 +524,13 @@ function SettingsPanel({
   onChangePerfProfile,
   readingSpeed,
   onChangeReadingSpeed,
+  hfTokenStatus,
+  hfTokenInput,
+  onChangeHfTokenInput,
+  onSaveHfToken,
+  onClearHfToken,
+  hfTokenMessage,
+  hfTokenSaving,
 }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -588,6 +597,60 @@ function SettingsPanel({
           <button className="button" onClick={onOpenModels}>
             {t("settings.openModels")}
           </button>
+        </div>
+
+        <div className="settings-section">
+          <h3>{t("settings.hfTokenTitle")}</h3>
+          <p className="modal-description">{t("settings.hfTokenDescription")}</p>
+          <div className="field">
+            <label className="label">{t("settings.hfTokenLabel")}</label>
+            <div className="voice-ref-input-wrapper">
+              <input
+                className="input"
+                type="password"
+                placeholder={t("settings.hfTokenPlaceholder")}
+                value={hfTokenInput}
+                onChange={(e) => onChangeHfTokenInput(e.target.value)}
+              />
+              {hfTokenInput && (
+                <button
+                  type="button"
+                  className="ghost small clear-voice-ref"
+                  onClick={() => onChangeHfTokenInput("")}
+                  title={t("settings.hfTokenClear")}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+            <div className="row">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={onSaveHfToken}
+                disabled={hfTokenSaving}
+              >
+                {hfTokenSaving ? t("settings.hfTokenSaving") : t("settings.hfTokenSave")}
+              </button>
+              <button
+                type="button"
+                className="ghost"
+                onClick={onClearHfToken}
+                disabled={hfTokenSaving}
+              >
+                {t("settings.hfTokenClear")}
+              </button>
+            </div>
+            {hfTokenStatus?.hf_token_set && (
+              <p className="muted">
+                {t("settings.hfTokenSet", { source: hfTokenStatus.hf_token_source })}
+              </p>
+            )}
+            {!hfTokenStatus?.hf_token_set && (
+              <p className="muted">{t("settings.hfTokenNotSet")}</p>
+            )}
+            {hfTokenMessage && <p className="status">{hfTokenMessage}</p>}
+          </div>
         </div>
       </div>
     </div>
@@ -709,7 +772,18 @@ export default function App() {
     const stored = localStorage.getItem("oratioviva_reading_wpm");
     return stored ? parseInt(stored, 10) : DEFAULT_WPM;
   });
+  const [qualityMode, setQualityMode] = useState(() => {
+    if (typeof window === "undefined") return "balanced";
+    return localStorage.getItem("oratioviva_quality_mode") || "balanced";
+  });
   const [analytics, setAnalytics] = useState(null);
+  const [hfTokenStatus, setHfTokenStatus] = useState({
+    hf_token_set: false,
+    hf_token_source: "none",
+  });
+  const [hfTokenInput, setHfTokenInput] = useState("");
+  const [hfTokenMessage, setHfTokenMessage] = useState("");
+  const [hfTokenSaving, setHfTokenSaving] = useState(false);
 
   useEffect(() => {
     localStorage.clear();
@@ -773,6 +847,11 @@ export default function App() {
     localStorage.setItem("oratioviva_reading_wpm", readingSpeed.toString());
   }, [readingSpeed]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem("oratioviva_quality_mode", qualityMode);
+  }, [qualityMode]);
+
   const checkBackend = useCallback(async () => {
     try {
       const base = await resolveApiBase();
@@ -810,6 +889,55 @@ export default function App() {
       attempts++;
     }
   }, [checkBackend, voiceId]);
+
+  const refreshSettings = useCallback(async () => {
+    try {
+      const res = await fetchSettings();
+      if (res) {
+        setHfTokenStatus(res);
+      }
+    } catch (e) {
+      console.error("Failed to fetch settings:", e);
+    }
+  }, []);
+
+  const handleSaveHfToken = useCallback(async () => {
+    setHfTokenSaving(true);
+    setHfTokenMessage("");
+    try {
+      await saveHfToken(hfTokenInput);
+      setHfTokenMessage(
+        hfTokenInput ? t("settings.hfTokenSaved") : t("settings.hfTokenCleared")
+      );
+      setHfTokenInput("");
+      await refreshSettings();
+    } catch (e) {
+      setHfTokenMessage(
+        t("settings.hfTokenError", { error: e.message || "Save failed" })
+      );
+    } finally {
+      setHfTokenSaving(false);
+      setTimeout(() => setHfTokenMessage(""), 3000);
+    }
+  }, [hfTokenInput, refreshSettings, t]);
+
+  const handleClearHfToken = useCallback(async () => {
+    setHfTokenSaving(true);
+    setHfTokenMessage("");
+    try {
+      await saveHfToken("");
+      setHfTokenMessage(t("settings.hfTokenCleared"));
+      setHfTokenInput("");
+      await refreshSettings();
+    } catch (e) {
+      setHfTokenMessage(
+        t("settings.hfTokenError", { error: e.message || "Clear failed" })
+      );
+    } finally {
+      setHfTokenSaving(false);
+      setTimeout(() => setHfTokenMessage(""), 3000);
+    }
+  }, [refreshSettings, t]);
 
   useEffect(() => {
     refreshBackend();
@@ -1124,6 +1252,7 @@ export default function App() {
           text,
           voice_id: voiceId,
           speed,
+          quality: qualityMode,
           style: style || undefined,
           voice_ref: voiceRef || undefined,
           chunk_size: longAudioOptions.chunkSize,
@@ -1131,7 +1260,14 @@ export default function App() {
         });
       } else {
         job = await createSynthesis(
-          { text, voice_id: voiceId, speed, style: style || undefined, voice_ref: voiceRef || undefined },
+          {
+            text,
+            voice_id: voiceId,
+            speed,
+            quality: qualityMode,
+            style: style || undefined,
+            voice_ref: voiceRef || undefined,
+          },
           { asyncMode: true },
         );
       }
@@ -1141,7 +1277,7 @@ export default function App() {
       await refreshJobs();
     } catch (err) {
       setStatus(t("status.synthError", { error: err.message }));
-      setRetryJob({ text, voiceId, speed, style, voiceRef });
+      setRetryJob({ text, voiceId, speed, qualityMode, style, voiceRef });
     } finally {
       setLoading(false);
       setSynthesisProgress(0);
@@ -1154,6 +1290,7 @@ export default function App() {
       setText(retryJob.text);
       setVoiceId(retryJob.voiceId);
       setSpeed(retryJob.speed);
+      setQualityMode(retryJob.qualityMode || "balanced");
       setStyle(retryJob.style || "");
       const isValidVoiceRef = (ref) => {
         if (!ref || !ref.trim()) return true;
@@ -1376,6 +1513,13 @@ export default function App() {
           onChangePerfProfile={setPerfProfile}
           readingSpeed={readingSpeed}
           onChangeReadingSpeed={setReadingSpeed}
+          hfTokenStatus={hfTokenStatus}
+          hfTokenInput={hfTokenInput}
+          onChangeHfTokenInput={setHfTokenInput}
+          onSaveHfToken={handleSaveHfToken}
+          onClearHfToken={handleClearHfToken}
+          hfTokenMessage={hfTokenMessage}
+          hfTokenSaving={hfTokenSaving}
         />
       )}
 
@@ -1408,7 +1552,7 @@ export default function App() {
           <span className={`badge ${currentModelReady ? "badge-ok" : "badge-warn"}`}>
             {currentModelReady ? t("toolbar.modelOk") : t("toolbar.modelMissing")}
           </span>
-          <button className="ghost" onClick={() => { refreshModels(); setShowSettingsPanel(true); }}>
+          <button className="ghost" onClick={() => { refreshModels(); refreshSettings(); setShowSettingsPanel(true); }}>
             {t("toolbar.settings")}
           </button>
           <select
@@ -1642,6 +1786,34 @@ export default function App() {
                   onChange={(e) => setSpeed(parseFloat(e.target.value))}
                 />
               </div>
+            </div>
+
+            <div className="field">
+              <label className="label">{t("form.qualityLabel")}</label>
+              <div className="segmented">
+                <button
+                  type="button"
+                  className={`segmented-btn ${qualityMode === "fast" ? "active" : ""}`}
+                  onClick={() => setQualityMode("fast")}
+                >
+                  {t("form.qualityFast")}
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-btn ${qualityMode === "balanced" ? "active" : ""}`}
+                  onClick={() => setQualityMode("balanced")}
+                >
+                  {t("form.qualityBalanced")}
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-btn ${qualityMode === "quality" ? "active" : ""}`}
+                  onClick={() => setQualityMode("quality")}
+                >
+                  {t("form.qualityQuality")}
+                </button>
+              </div>
+              <p className="muted">{t("form.qualityHint")}</p>
             </div>
 
             <div className="field">

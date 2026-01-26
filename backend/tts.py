@@ -375,6 +375,7 @@ class TTSService:
         text: str,
         voice_id: str,
         speed: float = 1.0,
+        quality: Optional[str] = None,
         style: Optional[str] = None,
         voice_ref: Optional[str] = None,
         job_id: Optional[str] = None,
@@ -452,6 +453,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 voice_ref=voice_ref,
                 created_at=created_at,
@@ -496,6 +498,93 @@ class TTSService:
         backend_dir = Path(__file__).resolve().parent
         return backend_dir.parent / ".venv_dia2" / "Scripts" / "python.exe"
 
+    def _resolve_dia2_python(self) -> Path:
+        """Resolve Dia2 python executable and ensure core deps are available."""
+        import os
+        import subprocess
+        import time
+
+        override = os.getenv("ORATIO_DIA2_PYTHON")
+        if override:
+            dia2_venv_python = Path(override)
+        else:
+            backend_dir = Path(__file__).resolve().parent
+            dia2_venv_python = backend_dir.parent / ".venv_dia2" / "Scripts" / "python.exe"
+
+        if not dia2_venv_python.exists():
+            raise RuntimeError(
+                "Dia2 python not found. Ensure Dia2 venv is installed (desktop should create it automatically)."
+            )
+
+        ready = False
+        last_details = ""
+        for _ in range(36):  # ~3 minutes
+            check = subprocess.run(
+                [
+                    str(dia2_venv_python),
+                    "-c",
+                    "import torch, transformers, safetensors, sphn; print('ok')",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if check.returncode == 0:
+                ready = True
+                break
+
+            last_details = (check.stderr or check.stdout or "").strip()
+            lower = last_details.lower()
+            missing_pkg = "no module named" in lower and any(
+                name in lower
+                for name in ["torch", "transformers", "safetensors", "sphn"]
+            )
+            if missing_pkg:
+                time.sleep(5)
+                continue
+            break
+
+        if not ready:
+            raise RuntimeError(
+                "Dia2 environment is not ready (torch/transformers missing) or setup failed. "
+                "Wait for first-run setup to finish and restart the app. "
+                f"Details: {last_details}"
+            )
+
+        return dia2_venv_python
+
+    @staticmethod
+    def _dia2_sampling_params(quality: Optional[str]) -> tuple[float, float, int]:
+        base_cfg = float(os.getenv("ORATIO_DIA2_CFG_SCALE", "2.0"))
+        base_temp = float(os.getenv("ORATIO_DIA2_TEMPERATURE", "0.8"))
+        base_top_k = int(os.getenv("ORATIO_DIA2_TOP_K", "50"))
+        quality_key = (quality or "").lower()
+        if quality_key == "fast":
+            cfg_scale = float(os.getenv("ORATIO_DIA2_FAST_CFG_SCALE", str(base_cfg)))
+            temperature = float(
+                os.getenv("ORATIO_DIA2_FAST_TEMPERATURE", str(base_temp))
+            )
+            top_k = int(os.getenv("ORATIO_DIA2_FAST_TOP_K", str(base_top_k)))
+            return cfg_scale, temperature, top_k
+        if quality_key == "quality":
+            cfg_scale = float(
+                os.getenv("ORATIO_DIA2_QUALITY_CFG_SCALE", str(base_cfg))
+            )
+            temperature = float(
+                os.getenv("ORATIO_DIA2_QUALITY_TEMPERATURE", str(base_temp))
+            )
+            top_k = int(os.getenv("ORATIO_DIA2_QUALITY_TOP_K", str(base_top_k)))
+            return cfg_scale, temperature, top_k
+        return base_cfg, base_temp, base_top_k
+
+    @staticmethod
+    def _dia2_timeout_seconds() -> int:
+        return max(60, int(os.getenv("ORATIO_DIA2_TIMEOUT", "300")))
+
+    @staticmethod
+    def _dia2_batch_timeout_seconds() -> int:
+        return max(120, int(os.getenv("ORATIO_DIA2_BATCH_TIMEOUT", "1200")))
+
     def _ensure_qwen_tts_deps(self, python_exe: Path) -> None:
         """Install qwen-tts deps into the heavy venv if missing."""
         import subprocess
@@ -530,6 +619,28 @@ class TTSService:
             details = (install.stderr or install.stdout or "").strip()
             raise RuntimeError(f"Failed to install Qwen3-TTS dependencies: {details}")
 
+    @staticmethod
+    def _qwen_timeout_seconds(quality: Optional[str]) -> int:
+        base = int(os.getenv("ORATIO_QWEN_TIMEOUT", "600"))
+        quality_key = (quality or "").lower()
+        if quality_key == "fast":
+            return max(60, int(os.getenv("ORATIO_QWEN_FAST_TIMEOUT", str(base))))
+        if quality_key == "quality":
+            return max(60, int(os.getenv("ORATIO_QWEN_QUALITY_TIMEOUT", str(base))))
+        return max(60, base)
+
+    @staticmethod
+    def _qwen_batch_timeout_seconds(quality: Optional[str]) -> int:
+        base = int(os.getenv("ORATIO_QWEN_BATCH_TIMEOUT", "1800"))
+        quality_key = (quality or "").lower()
+        if quality_key == "fast":
+            return max(120, int(os.getenv("ORATIO_QWEN_FAST_BATCH_TIMEOUT", str(base))))
+        if quality_key == "quality":
+            return max(
+                120, int(os.getenv("ORATIO_QWEN_QUALITY_BATCH_TIMEOUT", str(base)))
+            )
+        return max(120, base)
+
     def _synthesize_qwen3_customvoice_local(
         self,
         *,
@@ -538,6 +649,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         created_at: datetime,
         model_path: str,
@@ -592,7 +704,7 @@ class TTSService:
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=self._qwen_timeout_seconds(quality),
         )
         if result.returncode != 0:
             err = result.stderr or result.stdout or "Unknown error"
@@ -660,6 +772,7 @@ class TTSService:
         job_ids: List[str],
         speed: float,
         style: Optional[str],
+        quality: Optional[str],
         created_at: datetime,
     ) -> List[AudioResult]:
         import json
@@ -716,7 +829,7 @@ class TTSService:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle)
 
-            timeout = int(os.getenv("ORATIO_QWEN_BATCH_TIMEOUT", "1800"))
+            timeout = self._qwen_batch_timeout_seconds(quality)
             cmd = [
                 str(python_exe),
                 str(worker_script),
@@ -776,6 +889,7 @@ class TTSService:
         job_ids: List[str],
         speed: float = 1.0,
         style: Optional[str] = None,
+        quality: Optional[str] = None,
     ) -> List[AudioResult]:
         if voice_id not in VOICE_BY_ID:
             raise ValueError(f"Unknown voice_id: {voice_id}")
@@ -789,6 +903,7 @@ class TTSService:
             job_ids=job_ids,
             speed=speed,
             style=style,
+            quality=quality,
             created_at=created_at,
         )
 
@@ -800,6 +915,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         voice_ref: Optional[str],
         created_at: datetime,
@@ -866,6 +982,125 @@ class TTSService:
             model=voice.model,
             voice_id=voice.id,
             source="local",
+        )
+
+    def _synthesize_dia2_batch(
+        self,
+        *,
+        chunks: List[str],
+        voice: VoicePreset,
+        job_ids: List[str],
+        speed: float,
+        quality: Optional[str],
+        created_at: datetime,
+    ) -> List[AudioResult]:
+        import json
+        import os
+        import subprocess
+        import tempfile
+
+        if len(chunks) != len(job_ids):
+            raise ValueError("Chunks/job_ids length mismatch.")
+
+        model_path = self._resolve_model_path(voice.model)
+        output_paths = [self.audio_dir / f"{job_id}.wav" for job_id in job_ids]
+
+        backend_dir = Path(__file__).resolve().parent
+        worker_script = backend_dir / "dia2_worker.py"
+        if not worker_script.exists():
+            raise RuntimeError("dia2_worker.py not found in backend directory")
+
+        dia2_venv_python = self._resolve_dia2_python()
+        cfg_scale, temperature, top_k = self._dia2_sampling_params(quality)
+
+        payload = {
+            "model_path": model_path,
+            "chunks": chunks,
+            "output_paths": [str(p) for p in output_paths],
+            "cfg_scale": cfg_scale,
+            "temperature": temperature,
+            "top_k": top_k,
+        }
+
+        fd, payload_path = tempfile.mkstemp(prefix="dia2_batch_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle)
+
+            timeout = self._dia2_batch_timeout_seconds()
+            cmd = [
+                str(dia2_venv_python),
+                str(worker_script),
+                "--batch",
+                str(payload_path),
+            ]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            if result.returncode != 0:
+                err = result.stderr or result.stdout or "Unknown error"
+                raise RuntimeError(f"Dia2 batch failed: {err}")
+
+            output = self._parse_worker_json(result.stdout, "Dia2 batch")
+            if not output.get("success"):
+                raise RuntimeError(output.get("error") or "Dia2 batch failed")
+
+            results = output.get("results") or []
+            if len(results) != len(output_paths):
+                raise RuntimeError("Dia2 batch returned unexpected results")
+
+            audio_results: List[AudioResult] = []
+            for idx, info in enumerate(results):
+                out_path = Path(info.get("output_path") or output_paths[idx])
+                duration = float(info.get("duration") or 0.0)
+                if speed != 1.0 and out_path.exists():
+                    self._apply_speed_to_wav(out_path, speed)
+                    if duration:
+                        duration = duration / speed
+                audio_results.append(
+                    AudioResult(
+                        job_id=job_ids[idx],
+                        audio_path=out_path,
+                        audio_url=f"{self.base_audio_url}/{out_path.name}",
+                        duration_seconds=duration,
+                        created_at=created_at,
+                        model=voice.model,
+                        voice_id=voice.id,
+                        source="local",
+                    )
+                )
+            return audio_results
+        finally:
+            try:
+                os.unlink(payload_path)
+            except OSError:
+                pass
+
+    def synthesize_dia2_batch(
+        self,
+        *,
+        chunks: List[str],
+        voice_id: str,
+        job_ids: List[str],
+        speed: float = 1.0,
+        quality: Optional[str] = None,
+    ) -> List[AudioResult]:
+        if voice_id not in VOICE_BY_ID:
+            raise ValueError(f"Unknown voice_id: {voice_id}")
+        voice = VOICE_BY_ID[voice_id]
+        if "dia2" not in (voice.model or "").lower():
+            raise ValueError("Batch Dia2 synthesis requested for non-Dia2 voice.")
+        created_at = datetime.now(timezone.utc)
+        return self._synthesize_dia2_batch(
+            chunks=chunks,
+            voice=voice,
+            job_ids=job_ids,
+            speed=speed,
+            quality=quality,
+            created_at=created_at,
         )
 
     def _local_support(self, model_id: str) -> Tuple[bool, Optional[str]]:
@@ -1033,6 +1268,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         voice_ref: Optional[str],
         created_at: datetime,
@@ -1048,6 +1284,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 created_at=created_at,
                 model_path=model_path,
@@ -1059,6 +1296,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 created_at=created_at,
                 model_path=model_path,
@@ -1070,6 +1308,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 voice_ref=voice_ref,
                 created_at=created_at,
@@ -1082,6 +1321,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 voice_ref=voice_ref,
                 created_at=created_at,
@@ -1095,6 +1335,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 created_at=created_at,
                 model_path=model_path,
@@ -1107,6 +1348,7 @@ class TTSService:
                 job_id=job_id,
                 destination=destination,
                 speed=speed,
+                quality=quality,
                 style=style,
                 voice_ref=voice_ref,
                 created_at=created_at,
@@ -1140,6 +1382,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         created_at: datetime,
         model_path: str,
@@ -1192,6 +1435,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         created_at: datetime,
         model_path: str,
@@ -1281,6 +1525,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         voice_ref: Optional[str],
         created_at: datetime,
@@ -1352,6 +1597,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         created_at: datetime,
         model_path: str,
@@ -1408,6 +1654,7 @@ class TTSService:
         job_id: str,
         destination: Path,
         speed: float,
+        quality: Optional[str],
         style: Optional[str],
         voice_ref: Optional[str],
         created_at: datetime,
@@ -1418,59 +1665,8 @@ class TTSService:
         import subprocess
 
         backend_dir = Path(__file__).resolve().parent
-
-        # Prefer the interpreter path provided by the desktop bootstrapper.
-        dia2_python_env = os.getenv("ORATIO_DIA2_PYTHON")
-        if dia2_python_env:
-            dia2_venv_python = Path(dia2_python_env)
-        else:
-            # Dev fallback.
-            project_dir = backend_dir.parent
-            dia2_venv_python = project_dir / ".venv_dia2" / "Scripts" / "python.exe"
-
-        if not dia2_venv_python.exists():
-            raise RuntimeError(
-                "Dia2 python not found. Ensure Dia2 venv is installed (desktop should create it automatically)."
-            )
-
-        # Guard against partially-installed Dia2 env (common on first run).
-        # The desktop app installs `.venv_dia2` in the background; we wait a bit if it's still installing.
-        import time
-
-        ready = False
-        last_details = ""
-        for _ in range(36):  # ~3 minutes
-            check = subprocess.run(
-                [
-                    str(dia2_venv_python),
-                    "-c",
-                    "import torch, transformers, safetensors, sphn; print('ok')",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if check.returncode == 0:
-                ready = True
-                break
-
-            last_details = (check.stderr or check.stdout or "").strip()
-            lower = last_details.lower()
-            missing_pkg = "no module named" in lower and any(
-                name in lower
-                for name in ["torch", "transformers", "safetensors", "sphn"]
-            )
-            if missing_pkg:
-                time.sleep(5)
-                continue
-            break
-
-        if not ready:
-            raise RuntimeError(
-                "Dia2 environment is not ready (torch/transformers missing) or setup failed. "
-                "Wait for first-run setup to finish and restart the app. "
-                f"Details: {last_details}"
-            )
+        dia2_venv_python = self._resolve_dia2_python()
+        cfg_scale, temperature, top_k = self._dia2_sampling_params(quality)
 
         worker_script = backend_dir / "dia2_worker.py"
         if not worker_script.exists():
@@ -1482,16 +1678,16 @@ class TTSService:
             text,
             model_path,
             str(destination),
-            "2.0",
-            "0.8",
-            "50",
+            str(cfg_scale),
+            str(temperature),
+            str(top_k),
         ]
 
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=self._dia2_timeout_seconds(),
         )
 
         if result.returncode != 0:
