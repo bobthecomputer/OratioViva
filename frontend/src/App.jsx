@@ -731,6 +731,8 @@ export default function App() {
   const [voiceId, setVoiceId] = useState("");
   const [speed, setSpeed] = useState(1);
   const [style, setStyle] = useState("");
+  const [voicePrompt, setVoicePrompt] = useState("");
+  const [autoPunctuate, setAutoPunctuate] = useState(true);
   const [voiceRef, setVoiceRef] = useState("");
   const [history, setHistory] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -790,10 +792,16 @@ export default function App() {
     const savedVoice = localStorage.getItem("oratioviva_voice");
     const savedSpeed = localStorage.getItem("oratioviva_speed");
     const savedStyle = localStorage.getItem("oratioviva_style");
+    const savedVoicePrompt = localStorage.getItem("oratioviva_voice_prompt");
+    const savedAutoPunctuate = localStorage.getItem("oratioviva_auto_punctuate");
     const savedVoiceRef = localStorage.getItem("oratioviva_voiceRef");
     if (savedVoice) setVoiceId(savedVoice);
     if (savedSpeed) setSpeed(parseFloat(savedSpeed));
     if (savedStyle) setStyle(savedStyle);
+    if (savedVoicePrompt) setVoicePrompt(savedVoicePrompt);
+    if (savedAutoPunctuate !== null) {
+      setAutoPunctuate(savedAutoPunctuate === "true");
+    }
     if (savedVoiceRef) {
       const ext = savedVoiceRef.split('.').pop().toLowerCase();
       const audioExts = ['wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'webm'];
@@ -819,6 +827,15 @@ export default function App() {
     if (style) localStorage.setItem("oratioviva_style", style);
     else localStorage.removeItem("oratioviva_style");
   }, [style]);
+
+  useEffect(() => {
+    if (voicePrompt) localStorage.setItem("oratioviva_voice_prompt", voicePrompt);
+    else localStorage.removeItem("oratioviva_voice_prompt");
+  }, [voicePrompt]);
+
+  useEffect(() => {
+    localStorage.setItem("oratioviva_auto_punctuate", autoPunctuate ? "true" : "false");
+  }, [autoPunctuate]);
 
   useEffect(() => {
     if (voiceRef) {
@@ -1253,6 +1270,8 @@ export default function App() {
           voice_id: voiceId,
           speed,
           quality: qualityMode,
+          voice_prompt: voicePrompt || undefined,
+          auto_punctuate: autoPunctuate,
           style: style || undefined,
           voice_ref: voiceRef || undefined,
           chunk_size: longAudioOptions.chunkSize,
@@ -1265,6 +1284,8 @@ export default function App() {
             voice_id: voiceId,
             speed,
             quality: qualityMode,
+            voice_prompt: voicePrompt || undefined,
+            auto_punctuate: autoPunctuate,
             style: style || undefined,
             voice_ref: voiceRef || undefined,
           },
@@ -1277,7 +1298,16 @@ export default function App() {
       await refreshJobs();
     } catch (err) {
       setStatus(t("status.synthError", { error: err.message }));
-      setRetryJob({ text, voiceId, speed, qualityMode, style, voiceRef });
+      setRetryJob({
+        text,
+        voiceId,
+        speed,
+        qualityMode,
+        style,
+        voicePrompt,
+        autoPunctuate,
+        voiceRef,
+      });
     } finally {
       setLoading(false);
       setSynthesisProgress(0);
@@ -1292,6 +1322,8 @@ export default function App() {
       setSpeed(retryJob.speed);
       setQualityMode(retryJob.qualityMode || "balanced");
       setStyle(retryJob.style || "");
+      setVoicePrompt(retryJob.voicePrompt || "");
+      setAutoPunctuate(Boolean(retryJob.autoPunctuate));
       const isValidVoiceRef = (ref) => {
         if (!ref || !ref.trim()) return true;
         const ext = ref.split('.').pop().toLowerCase();
@@ -1824,6 +1856,26 @@ export default function App() {
                 value={style}
                 onChange={(e) => setStyle(e.target.value)}
               />
+            </div>
+
+            <div className="field">
+              <label className="label">{t("form.voicePromptLabel")}</label>
+              <textarea
+                className="input textarea"
+                rows={3}
+                placeholder={t("form.voicePromptPlaceholder")}
+                value={voicePrompt}
+                onChange={(e) => setVoicePrompt(e.target.value)}
+              />
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={autoPunctuate}
+                  onChange={(e) => setAutoPunctuate(e.target.checked)}
+                />
+                <span>{t("form.autoPunctuateLabel")}</span>
+              </label>
+              <p className="muted">{t("form.autoPunctuateHint")}</p>
             </div>
 
             <div className="field">

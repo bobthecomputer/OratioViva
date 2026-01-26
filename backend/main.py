@@ -10,6 +10,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+import re
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -149,6 +150,14 @@ class SynthesisRequest(BaseModel):
     quality: Optional[str] = Field(
         None, description="Optional quality mode: fast | balanced | quality."
     )
+    voice_prompt: Optional[str] = Field(
+        None,
+        description="Optional voice direction / delivery prompt.",
+    )
+    auto_punctuate: bool = Field(
+        False,
+        description="Apply automatic punctuation/spacing cleanup for readability.",
+    )
     style: Optional[str] = Field(
         None,
         description="Optional style/prompt (used for Parler or other style-aware models).",
@@ -271,6 +280,71 @@ def get_hf_token_status() -> Dict[str, str | bool]:
     else:
         source = "none"
     return {"hf_token_set": bool(token), "hf_token_source": source}
+
+
+def merge_style_prompt(style: Optional[str], voice_prompt: Optional[str]) -> Optional[str]:
+    style_val = (style or "").strip()
+    prompt_val = (voice_prompt or "").strip()
+    if style_val and prompt_val:
+        return f"{style_val}\n{prompt_val}"
+    if style_val:
+        return style_val
+    if prompt_val:
+        return prompt_val
+    return None
+
+
+def auto_punctuate_text(text: str) -> str:
+    cleaned = " ".join(text.strip().split())
+    if not cleaned:
+        return cleaned
+
+    has_sentence_punct = bool(re.search(r"[.!?]", cleaned))
+    if not has_sentence_punct:
+        chunks = []
+        start = 0
+        max_len = 140
+        while start < len(cleaned):
+            end = min(len(cleaned), start + max_len)
+            if end < len(cleaned):
+                space = cleaned.rfind(" ", start, end)
+                if space != -1 and space > start + 40:
+                    end = space
+            chunk = cleaned[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            start = end
+        cleaned = ". ".join(chunks).strip()
+        if not cleaned.endswith((".", "!", "?")):
+            cleaned += "."
+
+    paragraphs = [p.strip() for p in re.split(r"\n+", cleaned) if p.strip()]
+    sentences = []
+    for para in paragraphs:
+        if not para:
+            continue
+        if re.search(r"[.!?]$", para):
+            sentences.append(para)
+        else:
+            sentences.append(f"{para}.")
+    cleaned = " ".join(sentences)
+
+    cleaned = re.sub(r"\s*([.!?])\s*", r"\1 ", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = re.sub(
+        r"(?<![,;:])\s+(and|but|so|because|however|therefore|yet)\s+",
+        r", \1 ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
+def enhance_text(text: str, auto_punctuate: bool) -> str:
+    if auto_punctuate:
+        return auto_punctuate_text(text)
+    return text
 
 
 app = FastAPI(title="OratioViva API", version="0.6.6")
@@ -571,6 +645,9 @@ def synthesize(
             detail="Long text exceeds maximum allowed length.",
         )
 
+    text = enhance_text(text, request.auto_punctuate)
+    style = merge_style_prompt(request.style, request.voice_prompt)
+
     if request.voice_ref and request.voice_ref.strip():
         ext = Path(request.voice_ref).suffix.lower()
         audio_exts = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".aac", ".webm"}
@@ -591,7 +668,7 @@ def synthesize(
             request.voice_id,
             request.speed,
             request.quality,
-            request.style,
+            style,
             request.voice_ref,
         )
         job = job_store.get(job_id)
@@ -604,7 +681,7 @@ def synthesize(
         request.voice_id,
         request.speed,
         request.quality,
-        request.style,
+        style,
         request.voice_ref,
     )
     return JobStatusResponse(**job.__dict__)
@@ -696,6 +773,8 @@ class LongAudioRequest(BaseModel):
     voice_id: str = Field("parler_en_neutral")
     speed: float = Field(1.0, ge=0.5, le=2.0)
     quality: Optional[str] = Field(None)
+    voice_prompt: Optional[str] = Field(None)
+    auto_punctuate: bool = Field(False)
     style: Optional[str] = Field(None)
     voice_ref: Optional[str] = Field(None)
     chunk_size: int = Field(2000, ge=500, le=12000)
@@ -711,6 +790,9 @@ def synthesize_long(
     if not text:
         raise HTTPException(status_code=422, detail="Text payload cannot be empty.")
 
+    text = enhance_text(text, request.auto_punctuate)
+    style = merge_style_prompt(request.style, request.voice_prompt)
+
     job_id = str(uuid.uuid4())
     job_store.create(job_id, status="queued")
 
@@ -721,7 +803,7 @@ def synthesize_long(
         request.voice_id,
         request.speed,
         request.quality,
-        request.style,
+        style,
         request.voice_ref,
         request.chunk_size,
         request.parallel,
