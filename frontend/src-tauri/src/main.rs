@@ -3,7 +3,7 @@
 use std::{
     env,
     ffi::OsStr,
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     path::{Path, PathBuf},
@@ -12,6 +12,8 @@ use std::{
     thread,
     time::Duration,
 };
+
+use chrono::Local;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -34,6 +36,52 @@ fn get_api_base(state: State<BackendState>) -> String {
         port
     };
     format!("http://127.0.0.1:{port}")
+}
+
+#[tauri::command]
+fn open_devtools(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.open_devtools();
+        Ok(())
+    } else {
+        Err("Main window not found".to_string())
+    }
+}
+
+#[tauri::command]
+fn write_crash_report(app: AppHandle, report: String) -> Result<(), String> {
+    let data_dir = get_app_data_dir(&app).ok_or("No app data dir")?;
+    let logs_dir = data_dir.join("logs");
+    fs::create_dir_all(&logs_dir).map_err(|e| format!("Failed to create logs dir: {e}"))?;
+    let log_path = logs_dir.join("oratioviva-crash.log");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open crash log: {e}"))?;
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let line = format!("[{ts}] {report}\n");
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("Failed to write crash log: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn log_frontend(app: AppHandle, message: String) -> Result<(), String> {
+    let data_dir = get_app_data_dir(&app).ok_or("No app data dir")?;
+    let logs_dir = data_dir.join("logs");
+    fs::create_dir_all(&logs_dir).map_err(|e| format!("Failed to create logs dir: {e}"))?;
+    let log_path = logs_dir.join("oratioviva-frontend.log");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Failed to open frontend log: {e}"))?;
+    let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let line = format!("[{ts}] {message}\n");
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("Failed to write frontend log: {e}"))?;
+    Ok(())
 }
 
 #[derive(Default)]
@@ -954,7 +1002,13 @@ fn main() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_api_base, restart_backend])
+        .invoke_handler(tauri::generate_handler![
+            get_api_base,
+            restart_backend,
+            log_frontend,
+            open_devtools,
+            write_crash_report
+        ])
         .build(tauri::generate_context!())
         .expect("Failed to start OratioViva")
         .run(move |_app_handle, event| {

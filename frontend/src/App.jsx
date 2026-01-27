@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { TutorialPlayer } from "./TutorialPlayer";
+
+let notificationApi = null;
+if (typeof window !== "undefined" && window.__TAURI__) {
+  notificationApi = window.__TAURI__.notification;
+} else {
+  try {
+    notificationApi = require("@tauri-apps/api/notification");
+  } catch {
+    notificationApi = null;
+  }
+}
 import {
   createSynthesis,
   createLongSynthesis,
@@ -11,6 +23,7 @@ import {
   cancelDownload,
   deleteDownloadedModel,
   exportZip,
+  exportMp3,
   fetchAnalytics,
   fetchHistory,
   fetchJob,
@@ -79,6 +92,35 @@ const MODEL_RTF_BASE = {
   cosyvoice: 0.7,
   chroma_4b: 1.0,
   kokoro: 0.4,
+};
+
+const storage = {
+  get(key) {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set(key, value) {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {}
+  },
+  remove(key) {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.removeItem(key);
+    } catch {}
+  },
+  clear() {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.clear();
+    } catch {}
+  },
 };
 
 function formatBytes(bytes) {
@@ -543,6 +585,10 @@ function SettingsPanel({
   hfTokenSaving,
   crashReports,
   onChangeCrashReports,
+  osNotificationsEnabled,
+  onChangeOsNotifications,
+  showTutorialOnStartup,
+  onChangeShowTutorialOnStartup,
 }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -625,6 +671,34 @@ function SettingsPanel({
         </div>
 
         <div className="settings-section">
+          <h3>{t("settings.notificationsTitle")}</h3>
+          <p className="modal-description">{t("settings.notificationsDescription")}</p>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={osNotificationsEnabled}
+              onChange={(e) => onChangeOsNotifications(e.target.checked)}
+            />
+            <span>{t("settings.osNotificationsLabel")}</span>
+          </label>
+        </div>
+
+        <div className="settings-section">
+          <h3>{t("settings.generalTitle", "General")}</h3>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={showTutorialOnStartup}
+              onChange={(e) => {
+                setShowTutorialOnStartup(e.target.checked);
+                storage.set("oratioviva_show_tutorial", String(e.target.checked));
+              }}
+            />
+            <span>{t("settings.showTutorialLabel")}</span>
+          </label>
+        </div>
+
+        <div className="settings-section">
           <h3>{t("settings.hfTokenTitle")}</h3>
           <p className="modal-description">{t("settings.hfTokenDescription")}</p>
           <div className="field">
@@ -682,65 +756,72 @@ function SettingsPanel({
   );
 }
 
-function LongAudioModal({ text, voiceId, onConfirm, onCancel, t }) {
-  const [chunkSize, setChunkSize] = useState(DEFAULT_CHUNK_SIZE);
-  const [parallel, setParallel] = useState(false);
+function ToastContainer({ toasts, onDismiss }) {
+  return (
+    <div className="toast-container">
+      {toasts.map(toast => (
+        <div key={toast.id} className={`toast toast-${toast.type}`}>
+          <span>{toast.message}</span>
+          <button className="toast-close" onClick={() => onDismiss(toast.id)}>✕</button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-  const chunkCount = Math.ceil(text.length / chunkSize);
+function GuidedTour({ t, tourSteps, currentStep, onNext, onPrev, onSkip }) {
+  const [targetRect, setTargetRect] = useState(null);
+  const step = tourSteps[currentStep];
+
+  useEffect(() => {
+    if (!step?.target) {
+      setTargetRect(null);
+      return;
+    }
+    const el = document.querySelector(step.target);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      setTargetRect({
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+      });
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [currentStep, step]);
+
+  if (!step) return null;
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal-content" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>{t("longAudio.title")}</h2>
-          <button className="ghost modal-close" onClick={onCancel}>✕</button>
+    <div className="tour-overlay">
+      {targetRect && (
+        <div
+          className="tour-spotlight"
+          style={{
+            top: targetRect.top - 8,
+            left: targetRect.left - 8,
+            width: targetRect.width + 16,
+            height: targetRect.height + 16,
+          }}
+        />
+      )}
+      <div className="tour-tooltip" style={{
+        top: targetRect ? targetRect.bottom + 20 : "50%",
+        left: targetRect ? targetRect.left : "50%",
+        transform: targetRect ? "none" : "translate(-50%, -50%)",
+      }}>
+        <div className="tour-progress">
+          {tourSteps.map((_, i) => (
+            <div key={i} className={`tour-dot ${i === currentStep ? "active" : ""}`} />
+          ))}
         </div>
-
-        <p className="modal-description">{t("longAudio.description")}</p>
-
-        <div className="long-audio-info">
-          <p><strong>Text length:</strong> {text.length} characters</p>
-          <p><strong>Estimated chunks:</strong> {chunkCount}</p>
-        </div>
-
-        <div className="long-audio-options">
-          <h3>{t("longAudio.mode")}</h3>
-
-          <label className={`long-audio-mode ${!parallel ? "selected" : ""}`}>
-            <input type="radio" checked={!parallel} onChange={() => setParallel(false)} />
-            <div className="mode-content">
-              <strong>{t("longAudio.sequential")}</strong>
-              <span>{t("longAudio.sequentialDesc")}</span>
-            </div>
-          </label>
-
-          <label className={`long-audio-mode ${parallel ? "selected" : ""}`}>
-            <input type="radio" checked={parallel} onChange={() => setParallel(true)} />
-            <div className="mode-content">
-              <strong>{t("longAudio.parallel")}</strong>
-              <span>{t("longAudio.parallelDesc")}</span>
-            </div>
-          </label>
-        </div>
-
-        <div className="chunk-size-selector">
-          <label>
-            <strong>{t("longAudio.chunkSize")}:</strong> {chunkSize} {t("longAudio.characters")}
-          </label>
-          <input
-            type="range"
-            min="500"
-            max={MAX_CHUNK_SIZE}
-            step="500"
-            value={chunkSize}
-            onChange={e => setChunkSize(parseInt(e.target.value))}
-          />
-        </div>
-
-        <div className="modal-footer">
-          <button className="ghost" onClick={onCancel}>Cancel</button>
-          <button className="button" onClick={() => onConfirm({ chunkSize, parallel })}>
-            {t("longAudio.continueBtn", { mode: parallel ? "Parallel" : "Sequential" })}
+        <p>{step.content}</p>
+        <div className="tour-actions">
+          <button className="ghost" onClick={onSkip}>{t("firstRun.skip")}</button>
+          <button className="ghost" onClick={onPrev} disabled={currentStep === 0}>{t("firstRun.back")}</button>
+          <button className="button" onClick={onNext}>
+            {currentStep === tourSteps.length - 1 ? t("firstRun.getStarted") : t("firstRun.next")}
           </button>
         </div>
       </div>
@@ -748,318 +829,101 @@ function LongAudioModal({ text, voiceId, onConfirm, onCancel, t }) {
   );
 }
 
-function PresetsPanel({ t, presets, onClose, onRefresh }) {
-  const [activeTab, setActiveTab] = useState("tones");
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [newPreset, setNewPreset] = useState({ id: "", name: "", description: "", style: "", voice_prompt: "", category: "tts" });
-  const [editingId, setEditingId] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(null);
+function ShortcutsModal({ t, onClose }) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("help.shortcutsTitle")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="shortcuts-list">
+          <div className="shortcut-item">
+            <span className="shortcut-keys">Ctrl + Enter</span>
+            <span className="shortcut-desc">{t("help.shortcutsContent.generate")}</span>
+          </div>
+          <div className="shortcut-item">
+            <span className="shortcut-keys">Esc</span>
+            <span className="shortcut-desc">{t("help.shortcutsContent.clear")}</span>
+          </div>
+          <div className="shortcut-item">
+            <span className="shortcut-keys">Ctrl + C</span>
+            <span className="shortcut-desc">{t("help.shortcutsContent.copy")}</span>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="button" onClick={onClose}>{t("diagnostics.close")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  const getPresetsForTab = (tab) => {
-    switch (tab) {
-      case "tones": return presets.tones || [];
-      case "prompts": return presets.prompts || [];
-      case "music": return presets.music || [];
-      case "sfx": return presets.sfx || [];
-      default: return [];
-    }
+function ChainModal({ t, onClose, onStart, presets, voices, currentVoice }) {
+  const [items, setItems] = useState([{ text: "", voiceId: "", toneId: "", promptId: "" }]);
+
+  const addItem = () => {
+    setItems([...items, { text: "", voiceId: "", toneId: "", promptId: "" }]);
   };
 
-  const getSaveFn = (tab) => {
-    switch (tab) {
-      case "tones": return saveTonePreset;
-      case "prompts": return savePromptPreset;
-      default: return savePromptPreset;
-    }
+  const removeItem = (index) => {
+    setItems(items.filter((_, i) => i !== index));
   };
 
-  const getDeleteFn = (tab) => {
-    switch (tab) {
-      case "tones": return deleteTonePreset;
-      case "prompts": return deletePromptPreset;
-      default: return deletePromptPreset;
-    }
+  const updateItem = (index, field, value) => {
+    const newItems = [...items];
+    newItems[index][field] = value;
+    setItems(newItems);
   };
-
-  const currentPresets = getPresetsForTab(activeTab);
-  const saveFn = getSaveFn(activeTab);
-  const deleteFn = getDeleteFn(activeTab);
-
-  const handleSave = async () => {
-    if (!newPreset.id.trim() || !newPreset.name.trim()) {
-      return;
-    }
-    setSaving(true);
-    try {
-      const presetToSave = {
-        id: newPreset.id.trim().toLowerCase().replace(/\s+/g, "_"),
-        name: newPreset.name.trim(),
-        description: newPreset.description.trim() || undefined,
-        style: newPreset.style.trim() || undefined,
-        voice_prompt: newPreset.voice_prompt.trim() || undefined,
-        category: newPreset.category,
-      };
-      await saveFn(presetToSave);
-      setShowAddForm(false);
-      setNewPreset({ id: "", name: "", description: "", style: "", voice_prompt: "", category: "tts" });
-      onRefresh();
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const handleDelete = async (id) => {
-    if (!confirm(t("presets.deleteConfirm"))) return;
-    setDeleting(id);
-    try {
-      await deleteFn(id);
-      onRefresh();
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setDeleting(null);
-    }
-  };
-
-  const getTabLabel = (tab) => {
-    switch (tab) {
-      case "tones": return t("presets.tonesTab");
-      case "prompts": return t("presets.promptsTab");
-      case "music": return t("presets.musicTab");
-      case "sfx": return t("presets.sfxTab");
-      default: return tab;
-    }
-  };
-
-  const getAddPresetLabel = (tab) => {
-    switch (tab) {
-      case "tones": return t("presets.addTone");
-      case "prompts": return t("presets.addPrompt");
-      case "music": return t("presets.addMusic");
-      case "sfx": return t("presets.addSfx");
-      default: return t("presets.addPreset");
-    }
-  };
-
-  const presetType = activeTab;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content presets-panel" onClick={e => e.stopPropagation()}>
+      <div className="modal-content chain-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>{t("presets.title")}</h2>
+          <h2>{t("chain.title")}</h2>
           <button className="ghost modal-close" onClick={onClose}>✕</button>
         </div>
-
-        <div className="preset-tabs">
-          <button
-            className={`tab ${activeTab === "tones" ? "active" : ""}`}
-            onClick={() => setActiveTab("tones")}
-          >
-            {getTabLabel("tones")}
-          </button>
-          <button
-            className={`tab ${activeTab === "prompts" ? "active" : ""}`}
-            onClick={() => setActiveTab("prompts")}
-          >
-            {getTabLabel("prompts")}
-          </button>
-          <button
-            className={`tab ${activeTab === "music" ? "active" : ""}`}
-            onClick={() => setActiveTab("music")}
-          >
-            {getTabLabel("music")}
-          </button>
-          <button
-            className={`tab ${activeTab === "sfx" ? "active" : ""}`}
-            onClick={() => setActiveTab("sfx")}
-          >
-            {getTabLabel("sfx")}
-          </button>
-        </div>
-
-        {!showAddForm ? (
-          <div className="presets-list">
-            {currentPresets.length === 0 ? (
-              <p className="muted">{t("presets.empty")}</p>
-            ) : (
-              currentPresets.map((preset) => (
-                <div key={preset.id} className={`preset-item ${preset.is_default ? "preset-default" : ""} ${preset.is_custom ? "preset-custom" : ""}`}>
-                  <div className="preset-info">
-                    <strong>{preset.name}</strong>
-                    {preset.category && preset.category !== "tts" && (
-                      <span className="category-badge">{preset.category}</span>
-                    )}
-                    {preset.is_default && <span className="default-badge">Default</span>}
-                    {preset.is_custom && <span className="custom-badge">Custom</span>}
-                    {preset.description && <p className="preset-description">{preset.description}</p>}
-                    {preset.style && <p className="preset-detail"><strong>Style:</strong> {preset.style}</p>}
-                    {preset.voice_prompt && <p className="preset-detail"><strong>Prompt:</strong> {preset.voice_prompt}</p>}
-                  </div>
-                  {!preset.is_default && (
-                    <div className="preset-actions">
-                      <button
-                        className="ghost small"
-                        onClick={() => setEditingId(preset.id)}
-                        disabled={deleting === preset.id}
-                      >
-                        ✎
-                      </button>
-                      <button
-                        className="ghost small"
-                        onClick={() => handleDelete(preset.id)}
-                        disabled={deleting === preset.id}
-                      >
-                        {deleting === preset.id ? "..." : "🗑"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-            <button className="button" onClick={() => setShowAddForm(true)}>
-              + {getAddPresetLabel(activeTab)}
-            </button>
-          </div>
-        ) : (
-          <div className="preset-form">
-            <div className="field">
-              <label className="label">{t("presets.nameLabel")}</label>
-              <input
-                className="input"
-                value={newPreset.name}
-                onChange={(e) => setNewPreset({ ...newPreset, name: e.target.value })}
-                placeholder={t("presets.namePlaceholder")}
-              />
-            </div>
-            <div className="field">
-              <label className="label">{t("presets.idLabel")}</label>
-              <input
-                className="input"
-                value={newPreset.id}
-                onChange={(e) => setNewPreset({ ...newPreset, id: e.target.value })}
-                placeholder={t("presets.idPlaceholder")}
-              />
-            </div>
-            <div className="field">
-              <label className="label">{t("presets.descriptionLabel")}</label>
-              <input
-                className="input"
-                value={newPreset.description}
-                onChange={(e) => setNewPreset({ ...newPreset, description: e.target.value })}
-                placeholder={t("presets.descriptionPlaceholder")}
-              />
-            </div>
-            <div className="field">
-              <label className="label">{t("presets.styleLabel")}</label>
-              <input
-                className="input"
-                value={newPreset.style}
-                onChange={(e) => setNewPreset({ ...newPreset, style: e.target.value })}
-                placeholder={t("presets.stylePlaceholder")}
-              />
-            </div>
-            <div className="field">
-              <label className="label">{t("presets.voicePromptLabel")}</label>
+        <div className="chain-items">
+          {items.map((item, index) => (
+            <div key={index} className="chain-item">
+              <div className="chain-item-header">
+                <span>{t("chain.itemLabel", { index: index + 1 })}</span>
+                {items.length > 1 && (
+                  <button className="ghost small" onClick={() => removeItem(index)}>
+                    {t("chain.removeItem")}
+                  </button>
+                )}
+              </div>
               <textarea
-                className="input textarea"
-                rows={2}
-                value={newPreset.voice_prompt}
-                onChange={(e) => setNewPreset({ ...newPreset, voice_prompt: e.target.value })}
-                placeholder={t("presets.voicePromptPlaceholder")}
+                className="input"
+                placeholder={t("form.placeholder")}
+                value={item.text}
+                onChange={(e) => updateItem(index, "text", e.target.value)}
               />
+              <div className="chain-item-settings">
+                <select
+                  className="input"
+                  value={item.voiceId}
+                  onChange={(e) => updateItem(index, "voiceId", e.target.value)}
+                >
+                  <option value="">{t("form.voiceLabel")}...</option>
+                  {voices.map(v => (
+                    <option key={v.id} value={v.id}>{v.label || v.id}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div className="modal-footer">
-              <button className="ghost" onClick={() => setShowAddForm(false)}>
-                {t("presets.cancel")}
-              </button>
-              <button className="button" onClick={handleSave} disabled={saving || !newPreset.id.trim() || !newPreset.name.trim()}>
-                {saving ? t("presets.saving") : t("presets.save")}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function FirstRunGuide({ t, onClose }) {
-  const [step, setStep] = useState(0);
-  const steps = [
-    {
-      title: t("firstRun.welcomeTitle"),
-      content: t("firstRun.welcomeContent"),
-      icon: "🎙️",
-    },
-    {
-      title: t("firstRun.modelsTitle"),
-      content: t("firstRun.modelsContent"),
-      icon: "📦",
-    },
-    {
-      title: t("firstRun.voiceRefTitle"),
-      content: t("firstRun.voiceRefContent"),
-      icon: "🎵",
-    },
-    {
-      title: t("firstRun.qualityTitle"),
-      content: t("firstRun.qualityContent"),
-      icon: "⚡",
-    },
-    {
-      title: t("firstRun.readyTitle"),
-      content: t("firstRun.readyContent"),
-      icon: "🚀",
-    },
-  ];
-
-  const handleNext = () => {
-    if (step < steps.length - 1) {
-      setStep(step + 1);
-    } else {
-      if (typeof window !== "undefined") {
-        localStorage.setItem("oratioviva_has_seen_guide", "true");
-      }
-      onClose();
-    }
-  };
-
-  const handleSkip = () => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("oratioviva_has_seen_guide", "true");
-    }
-    onClose();
-  };
-
-  const current = steps[step];
-
-  return (
-    <div className="modal-overlay" onClick={handleSkip}>
-      <div className="modal-content first-run-guide" onClick={e => e.stopPropagation()}>
-        <div className="first-run-header">
-          <div className="first-run-icon">{current.icon}</div>
-          <div className="first-run-progress">
-            {steps.map((_, i) => (
-              <div key={i} className={`progress-dot ${i <= step ? "active" : ""}`} />
-            ))}
-          </div>
+          ))}
         </div>
-
-        <div className="first-run-content">
-          <h2>{current.title}</h2>
-          <p>{current.content}</p>
-        </div>
-
-        <div className="first-run-actions">
-          <button className="ghost" onClick={handleSkip}>
-            {t("firstRun.skip")}
-          </button>
-          <button className="button" onClick={handleNext}>
-            {step === steps.length - 1 ? t("firstRun.getStarted") : t("firstRun.next")}
+        <button className="ghost" onClick={addItem}>+ {t("chain.addItem")}</button>
+        <div className="modal-footer">
+          <button className="ghost" onClick={onClose}>{t("cleanup.cancel")}</button>
+          <button
+            className="button"
+            onClick={() => onStart(items)}
+            disabled={items.every(i => !i.text.trim())}
+          >
+            {t("chain.startChain")}
           </button>
         </div>
       </div>
@@ -1303,6 +1167,7 @@ export default function App() {
   const [text, setText] = useState("");
   const [voices, setVoices] = useState([]);
   const [voiceId, setVoiceId] = useState("");
+  const currentVoice = voices.find((voice) => voice.id === voiceId);
   const [speed, setSpeed] = useState(1);
   const [style, setStyle] = useState("");
   const [voicePrompt, setVoicePrompt] = useState("");
@@ -1337,20 +1202,20 @@ export default function App() {
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
   const [voiceBrowseMode, setVoiceBrowseMode] = useState(() => {
     if (typeof window === "undefined") return "model";
-    return localStorage.getItem("oratioviva_voice_browse_mode") || "model";
+    return storage.get("oratioviva_voice_browse_mode") || "model";
   });
   const [perfProfile, setPerfProfile] = useState(() => {
     if (typeof window === "undefined") return "rtx3090";
-    return localStorage.getItem("oratioviva_perf_profile") || "rtx3090";
+    return storage.get("oratioviva_perf_profile") || "rtx3090";
   });
   const [readingSpeed, setReadingSpeed] = useState(() => {
     if (typeof window === "undefined") return DEFAULT_WPM;
-    const stored = localStorage.getItem("oratioviva_reading_wpm");
+    const stored = storage.get("oratioviva_reading_wpm");
     return stored ? parseInt(stored, 10) : DEFAULT_WPM;
   });
   const [qualityMode, setQualityMode] = useState(() => {
     if (typeof window === "undefined") return "balanced";
-    return localStorage.getItem("oratioviva_quality_mode") || "balanced";
+    return storage.get("oratioviva_quality_mode") || "balanced";
   });
   const [analytics, setAnalytics] = useState(null);
   const [hfTokenStatus, setHfTokenStatus] = useState({
@@ -1373,15 +1238,25 @@ export default function App() {
   const [showFirstRunGuide, setShowFirstRunGuide] = useState(false);
   const [showCleanupPanel, setShowCleanupPanel] = useState(false);
   const [crashReports, setCrashReports] = useState(false);
+  const [showTutorialOnStartup, setShowTutorialOnStartup] = useState(true);
+  const [showHelpMenu, setShowHelpMenu] = useState(false);
+  const [showGuidedTour, setShowGuidedTour] = useState(false);
+  const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
+  const [toasts, setToasts] = useState([]);
+  const [osNotificationsEnabled, setOsNotificationsEnabled] = useState(false);
+  const [showChainModal, setShowChainModal] = useState(false);
+  const [chainItems, setChainItems] = useState([{ text: "", voiceId: "", toneId: "", promptId: "" }]);
+  const [chainProgress, setChainProgress] = useState({ current: 0, total: 0, status: "idle" });
+  const [showTutorial, setShowTutorial] = useState(false);
 
   useEffect(() => {
-    localStorage.clear();
-    const savedVoice = localStorage.getItem("oratioviva_voice");
-    const savedSpeed = localStorage.getItem("oratioviva_speed");
-    const savedStyle = localStorage.getItem("oratioviva_style");
-    const savedVoicePrompt = localStorage.getItem("oratioviva_voice_prompt");
-    const savedAutoPunctuate = localStorage.getItem("oratioviva_auto_punctuate");
-    const savedVoiceRef = localStorage.getItem("oratioviva_voiceRef");
+    const savedVoice = storage.get("oratioviva_voice");
+    const savedSpeed = storage.get("oratioviva_speed");
+    const savedStyle = storage.get("oratioviva_style");
+    const savedVoicePrompt = storage.get("oratioviva_voice_prompt");
+    const savedAutoPunctuate = storage.get("oratioviva_auto_punctuate");
+    const savedVoiceRef = storage.get("oratioviva_voiceRef");
     if (savedVoice) setVoiceId(savedVoice);
     if (savedSpeed) setSpeed(parseFloat(savedSpeed));
     if (savedStyle) setStyle(savedStyle);
@@ -1395,33 +1270,33 @@ export default function App() {
       if (savedVoiceRef.startsWith('http') || audioExts.includes(ext)) {
         setVoiceRef(savedVoiceRef);
       } else {
-        localStorage.removeItem("oratioviva_voiceRef");
+        storage.remove("oratioviva_voiceRef");
         setVoiceRef("");
       }
     }
   }, []);
 
   useEffect(() => {
-    if (voiceId) localStorage.setItem("oratioviva_voice", voiceId);
-    else localStorage.removeItem("oratioviva_voice");
+    if (voiceId) storage.set("oratioviva_voice", voiceId);
+    else storage.remove("oratioviva_voice");
   }, [voiceId]);
 
   useEffect(() => {
-    localStorage.setItem("oratioviva_speed", speed.toString());
+    storage.set("oratioviva_speed", speed.toString());
   }, [speed]);
 
   useEffect(() => {
-    if (style) localStorage.setItem("oratioviva_style", style);
-    else localStorage.removeItem("oratioviva_style");
+    if (style) storage.set("oratioviva_style", style);
+    else storage.remove("oratioviva_style");
   }, [style]);
 
   useEffect(() => {
-    if (voicePrompt) localStorage.setItem("oratioviva_voice_prompt", voicePrompt);
-    else localStorage.removeItem("oratioviva_voice_prompt");
+    if (voicePrompt) storage.set("oratioviva_voice_prompt", voicePrompt);
+    else storage.remove("oratioviva_voice_prompt");
   }, [voicePrompt]);
 
   useEffect(() => {
-    localStorage.setItem("oratioviva_auto_punctuate", autoPunctuate ? "true" : "false");
+    storage.set("oratioviva_auto_punctuate", autoPunctuate ? "true" : "false");
   }, [autoPunctuate]);
 
   useEffect(() => {
@@ -1429,47 +1304,47 @@ export default function App() {
       const ext = voiceRef.split('.').pop().toLowerCase();
       const audioExts = ['wav', 'mp3', 'ogg', 'flac', 'm4a', 'aac', 'webm'];
       if (voiceRef.startsWith('http') || audioExts.includes(ext)) {
-        localStorage.setItem("oratioviva_voiceRef", voiceRef);
+        storage.set("oratioviva_voiceRef", voiceRef);
       }
     } else {
-      localStorage.removeItem("oratioviva_voiceRef");
+      storage.remove("oratioviva_voiceRef");
     }
   }, [voiceRef]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem("oratioviva_voice_browse_mode", voiceBrowseMode);
+    storage.set("oratioviva_voice_browse_mode", voiceBrowseMode);
   }, [voiceBrowseMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem("oratioviva_perf_profile", perfProfile);
+    storage.set("oratioviva_perf_profile", perfProfile);
   }, [perfProfile]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem("oratioviva_reading_wpm", readingSpeed.toString());
+    storage.set("oratioviva_reading_wpm", readingSpeed.toString());
   }, [readingSpeed]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    localStorage.setItem("oratioviva_quality_mode", qualityMode);
+    storage.set("oratioviva_quality_mode", qualityMode);
   }, [qualityMode]);
 
   useEffect(() => {
-    if (toneId) localStorage.setItem("oratioviva_tone_id", toneId);
-    else localStorage.removeItem("oratioviva_tone_id");
+    if (toneId) storage.set("oratioviva_tone_id", toneId);
+    else storage.remove("oratioviva_tone_id");
   }, [toneId]);
 
   useEffect(() => {
-    if (promptId) localStorage.setItem("oratioviva_prompt_id", promptId);
-    else localStorage.removeItem("oratioviva_prompt_id");
+    if (promptId) storage.set("oratioviva_prompt_id", promptId);
+    else storage.remove("oratioviva_prompt_id");
   }, [promptId]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const savedTone = localStorage.getItem("oratioviva_tone_id");
-      const savedPrompt = localStorage.getItem("oratioviva_prompt_id");
+      const savedTone = storage.get("oratioviva_tone_id");
+      const savedPrompt = storage.get("oratioviva_prompt_id");
       if (savedTone) setToneId(savedTone);
       if (savedPrompt) setPromptId(savedPrompt);
     }
@@ -1485,9 +1360,14 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const hasSeenGuide = localStorage.getItem("oratioviva_has_seen_guide");
+      const hasSeenGuide = storage.get("oratioviva_has_seen_guide");
       if (!hasSeenGuide && backendReady) {
         setTimeout(() => setShowFirstRunGuide(true), 500);
+      }
+      // Also show tutorial on startup if enabled
+      const showTutorial = storage.get("oratioviva_show_tutorial");
+      if (showTutorial !== "false" && backendReady && !showTutorialOnStartup) {
+        // showTutorialOnStartup defaults to true, so we show if not explicitly disabled
       }
     }
   }, [backendReady]);
@@ -1817,6 +1697,77 @@ export default function App() {
     return true;
   }
 
+  function showToast(message, type = "info", duration = 4000) {
+    const id = Date.now();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, duration);
+  }
+
+  function dismissToast(id) {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }
+
+  function sendOsNotification(title, body) {
+    if (!osNotificationsEnabled || !notificationApi) return;
+    try {
+      if (notificationApi.sendNotification) {
+        notificationApi.sendNotification({ title, body });
+      } else if (notificationApi.isPermissionGranted?.()) {
+        notificationApi.sendNotification({ title, body });
+      } else {
+        notificationApi.requestPermission().then(permission => {
+          if (permission === "granted") {
+            notificationApi.sendNotification({ title, body });
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("OS notification failed:", e);
+    }
+  }
+
+  const tourSteps = [
+    { target: ".toolbar", content: t("tour.stepToolbar") },
+    { target: ".hero", content: t("tour.stepHero") },
+    { target: ".form .input.textarea", content: t("tour.stepTextInput") },
+    { target: ".estimator-panel", content: t("tour.stepEstimator") },
+    { target: ".voice-browser-section", content: t("tour.stepVoiceBrowser") },
+    { target: ".field input[type='range']", content: t("tour.stepSpeed") },
+    { target: ".segmented", content: t("tour.stepQuality") },
+    { target: "select[name='tone']", content: t("tour.stepTone") },
+    { target: "select[name='prompt']", content: t("tour.stepVoiceDirection") },
+    { target: "input[placeholder*='style']", content: t("tour.stepStyle") },
+    { target: "textarea[placeholder*='warm']", content: t("tour.stepVoicePrompt") },
+    { target: "input[placeholder*='voice.wav']", content: t("tour.stepVoiceRef") },
+    { target: ".form-actions .button", content: t("tour.stepGenerate") },
+    { target: ".history", content: t("tour.stepHistory") },
+    { target: ".jobs", content: t("tour.stepQueue") },
+    { target: ".analytics", content: t("tour.stepAnalytics") },
+    { target: ".toolbar .ghost:nth-child(5)", content: t("tour.stepSettings") },
+  ];
+
+  function nextTourStep() {
+    if (tourStep < tourSteps.length - 1) {
+      setTourStep(tourStep + 1);
+    } else {
+      setShowGuidedTour(false);
+      storage.set("oratioviva_has_seen_tour", "true");
+    }
+  }
+
+  function prevTourStep() {
+    if (tourStep > 0) {
+      setTourStep(tourStep - 1);
+    }
+  }
+
+  function skipTour() {
+    setShowGuidedTour(false);
+    storage.set("oratioviva_has_seen_tour", "true");
+  }
+
   async function handleDownloadModel(modelId) {
     const required = getRequiredModelsForModel(modelId);
     if (!required.length) return;
@@ -1832,6 +1783,14 @@ export default function App() {
   async function pollJob(jobId) {
     let attempts = 0;
     const maxAttempts = 180;
+    const startedAt = Date.now();
+    const words = countWords(text);
+    const audioSeconds = estimateAudioSeconds(words, readingSpeed);
+    const estimatedSeconds = estimateGenerationSeconds(
+      audioSeconds,
+      currentVoice?.model,
+      perfProfile,
+    );
     const statusMessages = [
       { progress: 10, message: "Initializing..." },
       { progress: 20, message: "Loading model..." },
@@ -1854,11 +1813,15 @@ export default function App() {
       }
       const progressIndex = Math.min(attempts, statusMessages.length - 1);
       setSynthesisStatus(statusMessages[progressIndex]?.message || "In progress...");
-      const base = statusMessages[progressIndex]?.progress ?? 80;
-      // Fake progress while polling: monotonic (no oscillation) and capped until job completes.
+      const base = statusMessages[progressIndex]?.progress ?? 10;
+      const elapsedSeconds = (Date.now() - startedAt) / 1000;
+      const estimatedProgress =
+        estimatedSeconds > 0 ? (elapsedSeconds / estimatedSeconds) * 100 : null;
+      // Smooth progress while polling: monotonic and capped until job completes.
       setSynthesisProgress((prev) => {
-        const next = Math.max(prev || 0, base) + 1;
-        return Math.min(95, next);
+        const target = estimatedProgress ?? (base + attempts * 1.2);
+        const next = Math.max(prev || 0, target);
+        return Math.min(99, next);
       });
 
       if (job.status === "succeeded") {
@@ -1951,6 +1914,7 @@ export default function App() {
       }
       await pollJob(job.job_id);
       setStatus(t("status.synthDone"));
+      sendOsNotification("OratioViva", t("status.synthDone"));
       await refreshHistory();
       await refreshJobs();
     } catch (err) {
@@ -2080,6 +2044,27 @@ export default function App() {
     }
   }
 
+  async function handleExportMp3() {
+    if (selectedHistory.size === 0) {
+      setStatus("Select at least one item to export.");
+      return;
+    }
+    try {
+      setStatus("Converting to MP3...");
+      const url = await exportMp3(Array.from(selectedHistory));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = selectedHistory.size === 1 ? "oratioviva-audio.mp3" : "oratioviva-audio-mp3.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setStatus("MP3 export downloaded.");
+      clearSelection();
+    } catch (err) {
+      setStatus(err.message || "MP3 export failed. Ensure ffmpeg is installed.");
+    }
+  }
+
   async function handleDeleteSelectedHistory() {
     if (selectedHistory.size === 0) {
       setStatus("Select items to delete.");
@@ -2110,7 +2095,6 @@ export default function App() {
     }
   }
 
-  const currentVoice = voices.find(v => v.id === voiceId);
   const currentModelId = getVoiceModelId(voiceId);
   const currentModelReady = areRequiredModelsAvailable(voiceId);
 
@@ -2211,6 +2195,10 @@ export default function App() {
           hfTokenSaving={hfTokenSaving}
           crashReports={crashReports}
           onChangeCrashReports={handleChangeCrashReports}
+          osNotificationsEnabled={osNotificationsEnabled}
+          onChangeOsNotifications={setOsNotificationsEnabled}
+          showTutorialOnStartup={showTutorialOnStartup}
+          onChangeShowTutorialOnStartup={setShowTutorialOnStartup}
         />
       )}
 
@@ -2258,6 +2246,47 @@ export default function App() {
         />
       )}
 
+      {showGuidedTour && (
+        <GuidedTour
+          t={t}
+          tourSteps={tourSteps}
+          currentStep={tourStep}
+          onNext={nextTourStep}
+          onPrev={prevTourStep}
+          onSkip={skipTour}
+        />
+      )}
+
+      {showShortcutsModal && (
+        <ShortcutsModal
+          t={t}
+          onClose={() => setShowShortcutsModal(false)}
+        />
+      )}
+
+      {showChainModal && (
+        <ChainModal
+          t={t}
+          onClose={() => setShowChainModal(false)}
+          onStart={(items) => {
+            setShowChainModal(false);
+            showToast(t("chain.startChain"), "info");
+          }}
+          presets={presets}
+          voices={voices}
+          currentVoice={currentVoice}
+        />
+      )}
+
+      {showTutorial && (
+        <TutorialPlayer
+          t={t}
+          onClose={() => setShowTutorial(false)}
+        />
+      )}
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
       <div className="toolbar">
         <div className="toolbar-left">
           <img src="/favicon.ico" alt="OratioViva" className="toolbar-icon" />
@@ -2283,6 +2312,30 @@ export default function App() {
           <button className="ghost" onClick={() => { refreshModels(); refreshSettings(); setShowSettingsPanel(true); }}>
             {t("toolbar.settings")}
           </button>
+          <div className="help-menu-container">
+            <button
+              className="ghost"
+              onClick={() => setShowHelpMenu(!showHelpMenu)}
+            >
+              {t("help.title")}
+            </button>
+            {showHelpMenu && (
+              <div className="help-dropdown">
+                <button onClick={() => { setShowHelpMenu(false); setShowGuidedTour(true); setTourStep(0); }}>
+                  {t("help.startTour")}
+                </button>
+                <button onClick={() => { setShowHelpMenu(false); setShowTutorial(true); }}>
+                  {t("help.tutorial")}
+                </button>
+                <button onClick={() => { setShowHelpMenu(false); setShowShortcutsModal(true); }}>
+                  {t("help.shortcuts")}
+                </button>
+                <button onClick={() => setShowHelpMenu(false)}>
+                  {t("help.whatsNew")}
+                </button>
+              </div>
+            )}
+          </div>
           <select
             className="lang-select"
             value={lang}
@@ -2683,6 +2736,7 @@ export default function App() {
             <div className="row">
               <button className="ghost" onClick={refreshHistory}>{t("history.refresh")}</button>
               <button className="ghost" onClick={handleExportSelected}>{t("history.exportZip")}</button>
+              <button className="ghost" onClick={handleExportMp3}>{t("export.exportMp3")}</button>
               <button className="ghost" onClick={handleDeleteSelectedHistory}>{t("history.deleteSelected")}</button>
             </div>
           </div>

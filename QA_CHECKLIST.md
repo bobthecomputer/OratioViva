@@ -50,9 +50,49 @@
 - [ ] Storage stats are accurate
 
 ### First-Run Experience
-- [ ] First-run guide shows on first launch
+- [x] First-run guide shows on first launch
 - [ ] Guide can be skipped
-- [ ] All guide steps are clear
+- [x] All guide steps are clear
+- [ ] Take Tour button works
+- [ ] Tour highlights correct UI elements
+
+### Guided Tour
+- [ ] Tour starts from Help menu
+- [ ] Tour navigates through all UI elements
+- [ ] Spotlight highlights correct elements
+- [ ] Next/Back navigation works
+- [ ] Skip button works
+- [ ] Tour completion saves state
+
+### Help Menu
+- [ ] Help menu opens from toolbar
+- [ ] Start Guided Tour works
+- [ ] Keyboard Shortcuts modal opens
+- [ ] Keyboard shortcuts are documented correctly
+- [ ] Ctrl+Enter generates audio
+- [ ] Escape clears text
+
+### Toast Notifications
+- [ ] Toast appears on generation complete
+- [ ] Toast appears on generation error
+- [ ] Toast appears on model download
+- [ ] Toast auto-dismisses after timeout
+- [ ] Toast can be manually dismissed
+
+### Chain Generation
+- [ ] Chain modal opens
+- [ ] Multiple items can be added
+- [ ] Per-item settings work
+- [ ] Chain starts processing
+- [ ] Progress updates correctly
+- [ ] Completion notification appears
+
+### Export Options
+- [ ] Export ZIP works
+- [ ] Export CSV manifest works
+- [ ] Export JSON manifest works
+- [ ] Multiple files can be selected
+- [ ] Export downloads correct files
 
 ### Telemetry
 - [ ] Telemetry toggle saves correctly

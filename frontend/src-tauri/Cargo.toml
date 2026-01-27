@@ -1,6 +1,6 @@
 [package]
 name = "oratioviva"
-version = "1.0.0"
+version = "1.1.6"
 description = "OratioViva desktop (Tauri)"
 authors = ["OratioViva"]
 edition = "2021"
@@ -13,7 +13,7 @@ anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-shell = "2"
 tokio = { version = "1", features = ["time", "process"] }
 which = "4.4"

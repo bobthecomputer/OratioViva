@@ -144,7 +144,7 @@ class ModelManager:
         self.base_dir = base_dir
         self.models_dir = models_dir or (base_dir / "models")
         self.models_dir.mkdir(parents=True, exist_ok=True)
-        self.token = token
+        self._initial_token = token
         self.optional_models: Set[str] = {m.lower() for m in (optional_models or [])}
         self.extra_dirs = [Path(p) for p in (extra_dirs or []) if p]
         self._lock = threading.Lock()
@@ -157,6 +157,11 @@ class ModelManager:
         self._cancel_download = False
         self._last_progress_time: float = 0
         self._download_start_time: Optional[float] = None
+
+    def _get_token(self) -> Optional[str]:
+        """Get current HF token from environment or initial settings."""
+        env_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        return env_token or self._initial_token
 
     @property
     def downloading(self) -> bool:
@@ -327,7 +332,7 @@ class ModelManager:
                         repo_id=repo_id,
                         local_dir=target,
                         local_dir_use_symlinks=False,
-                        token=self.token,
+                        token=self._get_token(),
                         resume_download=True,
                     )
                     download_result["done"] = True

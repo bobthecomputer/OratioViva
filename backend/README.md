@@ -1,82 +1,121 @@
-# Backend FastAPI (OratioViva)
+# OratioViva Backend (FastAPI)
 
-API TTS avec FastAPI. Provider par defaut: local. Le mode auto choisit local si des modeles sont presents, sinon Hugging Face Inference si `HF_TOKEN` est defini, sinon stub (bip). Local par defaut: Parler-TTS mini, Bark Small, SpeechT5 + HiFiGAN, MMS TTS; Kokoro reste via Inference en Python 3.13. Modeles optionnels (local possible): XTTS v2, F5-TTS, CosyVoice3 (voice_ref pour clonage).
+FastAPI backend for OratioViva TTS desktop application. Handles text-to-speech synthesis, model management, and audio processing.
 
-## Installation
-```
+## Quick Start
+
+### Development
+```bash
 cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-```
-Deps TTS locales (torch/transformers/parler-tts/bark/speecht5/mms):
-```
-pip install -r requirements-tts.txt
+uvicorn main:app --reload
 ```
 
-## Variables d'environnement
-- `HF_TOKEN` ou `HUGGINGFACEHUB_API_TOKEN`: token Hugging Face recommande pour l'Inference API.
-- `ORATIO_TTS_STUB=1`: force le mode stub (aucun appel modele).
-- `ORATIO_CLEAN_MAX_HOURS` (defaut 48): age max des WAV avant purge au startup/cleanup.
-- `ORATIO_CLEAN_MAX_HISTORY` (defaut 200): nombre max d'entrees conservees dans `history.json`.
-- `ORATIO_JOBS_MAX` (defaut 300, via code): jobs conserves dans `outputs/jobs.json`.
-- `ORATIO_TTS_PROVIDER` (`auto` | `local` | `inference` | `stub`): choisir la source TTS (defaut: `local`). `auto` priorise local si un modele supporte le mode local, sinon inference (token HF), sinon stub. `local` attend transformers+numpy+torch installes.
-- `ORATIO_TTS_LANGUAGE` (defaut `en`): langue par defaut pour les modeles "multi" (ex: XTTS).
-- `ORATIO_DATA_DIR`: force le dossier racine des outputs (`outputs/`). Quand l'app est packegee (PyInstaller), le cwd est utilise par defaut.
-- `ORATIO_FRONTEND_DIR`: chemin vers un dossier static (ex: `frontend/dist`) servi sur `/app` (sinon auto-detection du bundle PyInstaller).
-- `ORATIO_MODELS_DIR`: chemin vers des modeles telecharges localement (structure `hexgrad_Kokoro-82M`, `parler-tts_parler-tts-mini-v1.1`, `facebook_mms-tts-eng`, etc.). `_MEIPASS/models` est auto-detecte si present.
-- `ORATIO_OPTIONAL_MODELS`: liste d'alias separes par des virgules a ne pas rendre obligatoires ni a telecharger par defaut (`kokoro` par defaut, pratique si vous ne voulez pas Kokoro). Retirez-les pour forcer le telechargement.
+### Production (via Tauri Desktop App)
+The backend is bundled with the desktop application and managed automatically.
 
-## Demarrer l'API
+## Architecture
+
+### Virtual Environments
+- **Main venv (`.venv`)**: FastAPI, uvicorn, huggingface_hub, pydantic
+- **Dia2 venv (`.venv_dia2`)**: torch, transformers, safetensors (heavy ML deps)
+
+Both venvs are created automatically on first run.
+
+### Directory Structure
 ```
-uvicorn backend.main:app --reload
+backend/
+├── main.py           # FastAPI app entry point
+├── server.py         # Uvicorn server runner
+├── tts.py            # TTS service orchestration
+├── models.py         # Model management
+├── jobs.py           # Job queue and status
+├── dia2_worker.py    # Dia2 subprocess worker
+├── requirements.txt  # Core dependencies
+├── requirements_dia2.txt  # Dia2 ML dependencies
+├── certs/           # SSL certificates
+└── third_party/     # Third-party code (Dia2, etc.)
 ```
 
 ## Endpoints
-- `GET /health`
-- `GET /voices`
-- `POST /synthesize?async_mode=false` body: `text`, `voice_id`, `speed`, `style`, `voice_ref`
-- `GET /jobs/{job_id}`
-- `GET /jobs?limit=50`
-- `DELETE /jobs/{job_id}`
-- `POST /jobs/batch_delete`
-- `GET /history?limit=20`
-- `DELETE /history/{job_id}`
-- `POST /history/batch_delete`
-- `POST /maintenance/cleanup`
-- `POST /export/zip`
-- `GET /models/status` / `POST /models/download`
-- `GET /analytics` (provider, modeles disponibles, metriques jobs/audio)
 
-Les fichiers sont ecrits dans `outputs/audio/` et listes dans `outputs/history.json` (ignores par git).
+### Health & Status
+- `GET /health` - API health check
+- `GET /voices` - List available voices
+- `GET /model-status` - Downloaded models status
 
-## Job store (memoire)
-- Jobs gardes en memoire et persistes dans `outputs/jobs.json` (limite 300 par defaut).
-- Si l'API redemarre, les statuts sont recharges depuis `jobs.json` (les WAV anciens peuvent etre purges selon la config cleanup).
-- Pour un stockage plus robuste, on pourra remplacer par SQLite/Redis plus tard.
+### Synthesis
+- `POST /synthesize` - Generate audio from text
+- `POST /synthesize/long` - Generate long audio in chunks
+- `POST /synthesize/chain` - Chain multiple syntheses
 
-## Mode TTS local (hors Inference API)
-- Passer `ORATIO_TTS_PROVIDER=local` pour activer le pipeline local.
-- Installer les deps : `pip install -r requirements-tts.txt`.
-- Modeles par defaut: `parler-tts/parler-tts-mini-v1.1`, `suno/bark-small`, `microsoft/speecht5_tts` + `microsoft/speecht5_hifigan`, `facebook/mms-tts-eng`. Kokoro local indisponible sous Python 3.13 faute de package compatible.
-- Si les deps manquent, le service retombe sur le stub si `fallback_stub=True`.
-- Pour SpeechT5, `voice_ref` peut pointer vers un WAV/MP3 local pour changer la voix (embedding calcule via torchaudio).
-- Pour XTTS/F5/CosyVoice, `voice_ref` est obligatoire et doit etre un fichier audio local. XTTS prefere le package `TTS` (Coqui) (`pip install TTS`). F5/CosyVoice utilisent `transformers` avec `trust_remote_code` et peuvent demander des deps additionnelles. Le champ `style` peut servir de prompt texte si le modele le supporte.
-- `ORATIO_TTS_LANGUAGE` (defaut `en`) permet de fixer la langue des modeles "multi" comme XTTS.
+### Jobs
+- `GET /jobs/{job_id}` - Get job status
+- `GET /jobs` - List active jobs
+- `DELETE /jobs/{job_id}` - Cancel job
 
-## Modeles optionnels (local ou inference)
-- `coqui/XTTS-v2` (voice cloning, voice_ref requis, licence "other").
-- `SWivid/F5-TTS` (voice cloning, voice_ref requis, licence CC-BY-NC-4.0).
-- `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` (voice cloning, voice_ref requis, licence Apache-2.0).
-- Telechargement manuel (optionnel): `python scripts\download_models.py --models xtts f5_tts cosyvoice3 --dest models`
+### History
+- `GET /history` - List generation history
+- `DELETE /history/{job_id}` - Delete history entry
 
-## Packaging / offline
-- Commande unique (deps, frontend build, modeles, exe) : `..\scripts\make_app.ps1`.
-- Switch `-OneDir` recommande si le mode onefile PyInstaller depasse 4GB; `-SkipModels` evite de les embarquer.
-- `-Python311` force la creation du venv en Python 3.11 (ajouter `-RecreateVenv` si `.venv` existe deja).
-- Telecharger les modeles: `python scripts\download_models.py --dest models` (utilise `HF_TOKEN`).
-- Le frontend build (`frontend/dist`) est servi sur `/app` (detecte aussi depuis un bundle PyInstaller).
+### Export
+- `POST /export/zip` - Export audio as ZIP
+- `POST /export/manifest` - Export metadata as CSV/JSON
+- `POST /export/mp3` - Convert to MP3
 
-## Premier lancement / telechargements de modeles
-- Endpoint `GET /models/status`: indique si les modeles par defaut sont presents.
-- Endpoint `POST /models/download`: declenche le telechargement en tache de fond (identique au script `scripts/download_models.py`).
+### Models
+- `GET /models/status` - Model download status
+- `POST /models/download` - Download a model
+
+### Reports
+- `POST /reports/submit` - Submit bug report/feedback
+- `GET /reports` - List submitted reports
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORATIO_DATA_DIR` | Auto | Output directory |
+| `ORATIO_MODELS_DIR` | Auto | Models directory |
+| `ORATIO_DIA2_PYTHON` | Auto | Dia2 venv Python path |
+| `HF_TOKEN` | - | HuggingFace API token |
+| `ORATIO_CLEAN_MAX_HOURS` | 48 | Max age of audio files |
+| `ORATIO_CLEAN_MAX_HISTORY` | 200 | Max history entries |
+| `ORATIO_PORT` | 8000 | Server port |
+
+## Voice Cloning
+
+Supported models for voice cloning:
+- **SpeechT5**: `voice_ref` = path to WAV/MP3
+- **XTTS-v2**: `voice_ref` required
+- **F5-TTS**: `voice_ref` required
+- **CosyVoice3**: `voice_ref` required
+
+Reference audio requirements:
+- WAV or MP3 format
+- 5-30 seconds recommended
+- Clear voice, minimal background noise
+
+## Troubleshooting
+
+### Dia2 Worker Fails
+1. Check `.venv_dia2` exists in app data
+2. Verify torch/transformers installed:
+   ```bash
+   .venv_dia2\Scripts\python -c "import torch; print(torch.__version__)"
+   ```
+3. Check logs in `%LOCALAPPDATA%\Oratioviva\logs\`
+
+### Model Download Issues
+1. Verify internet connection
+2. Check HuggingFace token in Settings
+3. Ensure sufficient disk space
+
+### Port Already in Use
+The app automatically finds an available port if 8000 is in use.
+
+## License
+
+See project root LICENSE file.

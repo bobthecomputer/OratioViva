@@ -2,6 +2,23 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 
 const I18nContext = createContext(null);
 
+const storage = {
+  get(key) {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set(key, value) {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {}
+  },
+};
+
 const loadLocale = async (lang) => {
   try {
     const module = await import(`./locales/${lang}.json`);
@@ -18,7 +35,7 @@ export function I18nProvider({ children, defaultLang = 'en' }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const savedLang = localStorage.getItem('oratioviva_lang');
+    const savedLang = storage.get("oratioviva_lang");
     const initialLang = savedLang || defaultLang;
     setLang(initialLang);
   }, [defaultLang]);
@@ -46,7 +63,7 @@ export function I18nProvider({ children, defaultLang = 'en' }) {
 
   const changeLanguage = useCallback((newLang) => {
     setLang(newLang);
-    localStorage.setItem('oratioviva_lang', newLang);
+    storage.set("oratioviva_lang", newLang);
   }, []);
 
   return (

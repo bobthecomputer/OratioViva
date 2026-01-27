@@ -16,6 +16,7 @@ export type PromoConfig = {
     logo: string;
     screenshots: string[];
     banners: string[];
+    videos?: string[];
   };
   audio: {
     voiceover: string | null;

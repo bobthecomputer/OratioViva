@@ -6,14 +6,29 @@ const DEFAULT_API_BASE =
 const API_BASE_KEY = "oratioviva_api_base";
 let apiBaseCache = null;
 
+const storage = {
+  get(key) {
+    if (typeof window === "undefined") return null;
+    try {
+      return window.localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  },
+  set(key, value) {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {}
+  },
+};
+
 export function getApiBase() {
   if (apiBaseCache) return apiBaseCache;
-  if (typeof window !== "undefined") {
-    const stored = window.localStorage.getItem(API_BASE_KEY);
-    if (stored) {
-      apiBaseCache = stored;
-      return stored;
-    }
+  const stored = storage.get(API_BASE_KEY);
+  if (stored) {
+    apiBaseCache = stored;
+    return stored;
   }
   return DEFAULT_API_BASE;
 }
@@ -38,9 +53,7 @@ export async function resolveApiBase() {
   }
   if (base !== apiBaseCache) {
     apiBaseCache = base;
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(API_BASE_KEY, base);
-    }
+    storage.set(API_BASE_KEY, base);
   }
   return base;
 }
@@ -198,6 +211,21 @@ export async function exportZip(jobIds) {
   return url;
 }
 
+export async function exportMp3(jobIds) {
+  const base = await resolveApiBase();
+  const resp = await fetch(`${base}/export/mp3`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_ids: jobIds }),
+  });
+  if (!resp.ok) {
+    throw new Error("MP3 export failed");
+  }
+  const blob = await resp.blob();
+  const url = window.URL.createObjectURL(blob);
+  return url;
+}
+
 export async function getApiBaseAsync() {
   return resolveApiBase();
 }
@@ -264,4 +292,65 @@ export async function setTelemetrySettings(settings) {
     method: "POST",
     body: JSON.stringify(settings),
   });
+}
+
+export async function createChain(items, parallel = false) {
+  return jsonFetch("/synthesize/chain", {
+    method: "POST",
+    body: JSON.stringify({ items, parallel }),
+  });
+}
+
+export async function fetchChainStatus(chainId) {
+  return jsonFetch(`/chains/${chainId}/status`);
+}
+
+export async function exportManifest(jobIds, format = "csv") {
+  const base = await resolveApiBase();
+  const resp = await fetch(`${base}/export/manifest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_ids: jobIds, format }),
+  });
+  if (!resp.ok) {
+    throw new Error("Export manifest failed");
+  }
+  const blob = await resp.blob();
+  const ext = format === "csv" ? "csv" : "json";
+  const filename = `oratioviva-manifest.${ext}`;
+  const url = window.URL.createObjectURL(blob);
+  return { url, filename };
+}
+
+export async function submitReport(report) {
+  return jsonFetch("/reports/submit", {
+    method: "POST",
+    body: JSON.stringify(report),
+  });
+}
+
+export async function fetchReports(status = null, limit = 50) {
+  const base = await resolveApiBase();
+  let url = `${base}/reports?limit=${limit}`;
+  if (status) {
+    url += `&status=${encodeURIComponent(status)}`;
+  }
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error("Failed to fetch reports");
+  }
+  return resp.json();
+}
+
+export async function updateReportStatus(reportId, status) {
+  const base = await resolveApiBase();
+  const resp = await fetch(`${base}/reports/${reportId}/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  });
+  if (!resp.ok) {
+    throw new Error("Failed to update report status");
+  }
+  return resp.json();
 }

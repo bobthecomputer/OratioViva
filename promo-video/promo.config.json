@@ -1,21 +1,21 @@
 {
   "brand": {
-    "name": "Oratio Viva",
-    "tagline": "Science, voiced.",
+    "name": "OratioViva Studio",
+    "tagline": "Create the voice, your way.",
     "url": "oratioviva.app"
   },
   "features": [
     {
-      "title": "Notes → Voice",
-      "body": "Clear narration, fast."
+      "title": "Tone + Prompt presets",
+      "body": "Direct the voice."
     },
     {
-      "title": "Pacing Control",
-      "body": "Tempo and emphasis."
+      "title": "Music + SFX generators",
+      "body": "Shape the mood."
     },
     {
-      "title": "Export Ready",
-      "body": "MP3 + WAV."
+      "title": "Model diagnostics & cleanup",
+      "body": "Keep it clean."
     }
   ],
   "assets": {
@@ -25,6 +25,10 @@
     ],
     "banners": [
       "assets/banner-1.png"
+    ],
+    "videos": [
+      "assets/clip-1.mp4",
+      "assets/clip-2.mp4"
     ]
   },
   "audio": {
@@ -32,7 +36,7 @@
   },
   "video": {
     "format": "landscape",
-    "durationSeconds": 20,
+    "durationSeconds": 35,
     "fps": 30,
     "width": 1920,
     "height": 1080

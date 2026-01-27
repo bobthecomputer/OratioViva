@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import uuid
@@ -10,9 +12,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import re
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -885,41 +886,100 @@ def merge_style_prompt(
     return None
 
 
-def auto_punctuate_text(text: str) -> str:
-    cleaned = " ".join(text.strip().split())
+QUESTION_START_RE = re.compile(
+    r"^(?:[\"'“”‘’\(\[]+\s*)?("
+    r"who|what|why|how|when|where|which|whom|"
+    r"can|could|should|would|do|does|did|is|are|am|was|were|"
+    r"will|won't|may|might|shall|"
+    r"qui|quoi|que|quand|où|ou|comment|pourquoi|est\s*-?\s*ce|"
+    r"peux|peut|pouvez|dois|devrais|voudrais|voulez|"
+    r"sera|serait|sont|etes|êtes"
+    r")\b",
+    re.IGNORECASE,
+)
+EXCLAMATION_HINTS_RE = re.compile(
+    r"\b(wow|amazing|incredible|fantastic|awesome|excellent|brilliant|great|let's\s+go|"
+    r"bravo|yay|genial|génial|super|incroyable|excellent|formidable)\b",
+    re.IGNORECASE,
+)
+ACRONYM_RE = re.compile(r"\b(?:AI|API|GPU|CPU|RAM|VRAM|TTS|SFX|UX|UI|LG)\b")
+
+
+def _normalize_whitespace(text: str) -> str:
+    cleaned = text.replace("\r\n", "\n").replace("\r", "\n")
+    cleaned = cleaned.replace("“", '"').replace("”", '"').replace("’", "'")
+    cleaned = re.sub(r"[\t ]+", " ", cleaned)
+    cleaned = re.sub(r"\s+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n\s+", "\n", cleaned)
+    return cleaned.strip()
+
+
+def _spell_out_acronyms(text: str) -> str:
+    def repl(match: re.Match) -> str:
+        token = match.group(0)
+        return " ".join(token)
+
+    return ACRONYM_RE.sub(repl, text)
+
+
+def _chunk_text(text: str, max_len: int = 140) -> List[str]:
+    chunks: List[str] = []
+    start = 0
+    while start < len(text):
+        end = min(len(text), start + max_len)
+        if end < len(text):
+            space = text.rfind(" ", start, end)
+            if space != -1 and space > start + 40:
+                end = space
+        chunk = text[start:end].strip(" ,;:")
+        if chunk:
+            chunks.append(chunk)
+        start = end
+    return chunks
+
+
+def _is_question(sentence: str) -> bool:
+    if "?" in sentence:
+        return True
+    stripped = sentence.strip()
+    return bool(QUESTION_START_RE.search(stripped))
+
+
+def _infer_terminal_punct(sentence: str, tone_id: Optional[str]) -> str:
+    if _is_question(sentence):
+        return "?"
+    if tone_id in {"excited", "cheerful"} and EXCLAMATION_HINTS_RE.search(sentence):
+        return "!"
+    return "."
+
+
+def auto_punctuate_text(text: str, tone_id: Optional[str] = None) -> str:
+    cleaned = _normalize_whitespace(text)
     if not cleaned:
         return cleaned
 
-    has_sentence_punct = bool(re.search(r"[.!?]", cleaned))
-    if not has_sentence_punct:
-        chunks = []
-        start = 0
-        max_len = 140
-        while start < len(cleaned):
-            end = min(len(cleaned), start + max_len)
-            if end < len(cleaned):
-                space = cleaned.rfind(" ", start, end)
-                if space != -1 and space > start + 40:
-                    end = space
-            chunk = cleaned[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            start = end
-        cleaned = ". ".join(chunks).strip()
-        if not cleaned.endswith((".", "!", "?")):
-            cleaned += "."
+    cleaned = _spell_out_acronyms(cleaned)
+
+    cleaned = re.sub(r"\.{4,}", "...", cleaned)
+    cleaned = re.sub(r"([!?]){2,}", r"\1", cleaned)
 
     paragraphs = [p.strip() for p in re.split(r"\n+", cleaned) if p.strip()]
-    sentences = []
+    sentences: List[str] = []
     for para in paragraphs:
-        if not para:
-            continue
-        if re.search(r"[.!?]$", para):
-            sentences.append(para)
+        if re.search(r"[.!?]", para):
+            parts = re.split(r"(?<=[.!?])\s+", para)
         else:
-            sentences.append(f"{para}.")
-    cleaned = " ".join(sentences)
+            parts = _chunk_text(para)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            if not re.search(r"[.!?]$", part):
+                part = part.rstrip(" ,;:")
+                part = f"{part}{_infer_terminal_punct(part, tone_id)}"
+            sentences.append(part)
 
+    cleaned = " ".join(sentences)
     cleaned = re.sub(r"\s*([.!?])\s*", r"\1 ", cleaned).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     cleaned = re.sub(
@@ -932,9 +992,9 @@ def auto_punctuate_text(text: str) -> str:
     return cleaned
 
 
-def enhance_text(text: str, auto_punctuate: bool) -> str:
+def enhance_text(text: str, auto_punctuate: bool, tone_id: Optional[str] = None) -> str:
     if auto_punctuate:
-        return auto_punctuate_text(text)
+        return auto_punctuate_text(text, tone_id)
     return text
 
 
@@ -1000,7 +1060,6 @@ def settings_token(body: SettingsTokenRequest):
     if token:
         settings["hf_token"] = token
         save_settings(settings)
-        model_manager.token = token
         os.environ["HF_TOKEN"] = token
         os.environ["HUGGINGFACEHUB_API_TOKEN"] = token
         return {"status": "ok", "hf_token_set": True}
@@ -1008,7 +1067,6 @@ def settings_token(body: SettingsTokenRequest):
     if "hf_token" in settings:
         settings.pop("hf_token", None)
         save_settings(settings)
-    model_manager.token = None
     os.environ.pop("HF_TOKEN", None)
     os.environ.pop("HUGGINGFACEHUB_API_TOKEN", None)
     return {"status": "ok", "hf_token_set": False}
@@ -1546,7 +1604,7 @@ def synthesize(
             detail="Long text exceeds maximum allowed length.",
         )
 
-    text = enhance_text(text, request.auto_punctuate)
+    text = enhance_text(text, request.auto_punctuate, request.tone_id)
     style = merge_style_prompt(request.style, request.voice_prompt)
 
     if request.voice_ref and request.voice_ref.strip():
@@ -1693,6 +1751,78 @@ def cleanup_endpoint(body: CleanupRequest):
     return {"status": "ok", "deleted": deleted}
 
 
+class ReportRequest(BaseModel):
+    type: str = Field(..., description="bug, feedback, feature, voice_issue")
+    title: str = Field(..., min_length=3, max_length=200)
+    description: str = Field(..., min_length=10, max_length=5000)
+    email: Optional[str] = Field(None, max_length=255)
+    device_info: Optional[str] = Field(None, max_length=500)
+    logs: Optional[str] = Field(None, max_length=10000)
+    attachment_ids: Optional[List[str]] = Field(default_factory=list)
+
+
+REPORTS_PATH = OUTPUT_DIR / "reports.json"
+
+
+def load_reports() -> List[Dict]:
+    if REPORTS_PATH.exists():
+        try:
+            with open(REPORTS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def save_reports(reports: List[Dict]) -> None:
+    REPORTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(REPORTS_PATH, "w", encoding="utf-8") as f:
+        json.dump(reports, f, indent=2, ensure_ascii=False)
+
+
+@app.post("/reports/submit")
+def submit_report(body: ReportRequest):
+    report = {
+        "id": str(uuid.uuid4()),
+        "type": body.type,
+        "title": body.title,
+        "description": body.description,
+        "email": body.email,
+        "device_info": body.device_info,
+        "logs": body.logs,
+        "attachment_ids": body.attachment_ids,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "new",
+    }
+
+    reports = load_reports()
+    reports.insert(0, report)
+    reports = reports[:1000]
+    save_reports(reports)
+
+    return {"status": "ok", "report_id": report["id"]}
+
+
+@app.get("/reports")
+def list_reports(status: Optional[str] = None, limit: int = 50):
+    reports = load_reports()
+    if status:
+        reports = [r for r in reports if r.get("status") == status]
+    return {"items": reports[:limit]}
+
+
+@app.post("/reports/{report_id}/status")
+def update_report_status(report_id: str, status: str = "reviewed"):
+    reports = load_reports()
+    for report in reports:
+        if report["id"] == report_id:
+            report["status"] = status
+            report["updated_at"] = datetime.now(timezone.utc).isoformat()
+            save_reports(reports)
+            return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Report not found")
+
+
 @app.post("/export/zip")
 def export_zip(body: ExportRequest):
     files = collect_audio_files(body.job_ids)
@@ -1708,6 +1838,258 @@ def export_zip(body: ExportRequest):
     buffer.seek(0)
     headers = {"Content-Disposition": 'attachment; filename="oratioviva-audio.zip"'}
     return StreamingResponse(buffer, media_type="application/zip", headers=headers)
+
+
+class ExportManifestRequest(BaseModel):
+    job_ids: List[str]
+    format: str = "csv"
+
+
+@app.post("/export/manifest")
+def export_manifest(body: ExportManifestRequest):
+    items = load_history()
+    filtered = [item for item in items if item.get("job_id") in body.job_ids]
+    if not filtered:
+        raise HTTPException(status_code=404, detail="No entries found for given jobs")
+
+    if body.format == "csv":
+        import csv
+
+        output = io.StringIO()
+        writer = csv.DictWriter(
+            output,
+            fieldnames=[
+                "job_id",
+                "text_preview",
+                "model",
+                "voice_id",
+                "created_at",
+                "duration_seconds",
+                "audio_path",
+            ],
+        )
+        writer.writeheader()
+        for item in filtered:
+            writer.writerow(
+                {
+                    "job_id": item.get("job_id", ""),
+                    "text_preview": item.get("text_preview", "")[:160],
+                    "model": item.get("model", ""),
+                    "voice_id": item.get("voice_id", ""),
+                    "created_at": item.get("created_at", ""),
+                    "duration_seconds": item.get("duration_seconds", ""),
+                    "audio_path": item.get("audio_path", ""),
+                }
+            )
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": 'attachment; filename="oratioviva-manifest.csv"'
+            },
+        )
+    else:
+        return Response(
+            content=json.dumps(filtered, indent=2),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": 'attachment; filename="oratioviva-manifest.json"'
+            },
+        )
+
+
+class ExportMp3Request(BaseModel):
+    job_ids: List[str]
+
+
+def convert_wav_to_mp3(wav_path: Path, mp3_path: Path) -> bool:
+    """Convert a WAV file to MP3 using ffmpeg."""
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(wav_path),
+                "-b:a",
+                "192k",
+                "-f",
+                "mp3",
+                str(mp3_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        return mp3_path.exists()
+    except Exception:
+        return False
+
+
+@app.post("/export/mp3")
+def export_mp3(body: ExportMp3Request):
+    """Export audio files as MP3."""
+    files = collect_audio_files(body.job_ids)
+    if not files:
+        raise HTTPException(
+            status_code=404, detail="No audio files found for given jobs"
+        )
+
+    if len(files) == 1:
+        wav_path = Path(files[0])
+        mp3_path = wav_path.with_suffix(".mp3")
+        if convert_wav_to_mp3(wav_path, mp3_path):
+            buffer = io.BytesIO(mp3_path.read_bytes())
+            mp3_path.unlink()
+            return StreamingResponse(
+                buffer,
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{mp3_path.name}"'
+                },
+            )
+        raise HTTPException(status_code=500, detail="MP3 conversion failed")
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for wav_path in files:
+            wav_file = Path(wav_path)
+            mp3_file = wav_file.with_suffix(".mp3")
+            if convert_wav_to_mp3(wav_file, mp3_file):
+                zip_file.write(mp3_file, arcname=mp3_file.name)
+                mp3_file.unlink()
+            else:
+                zip_file.write(wav_file, arcname=wav_file.name)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="oratioviva-audio-mp3.zip"'
+        },
+    )
+
+
+class ChainRequest(BaseModel):
+    items: List[SynthesisRequest]
+    parallel: bool = False
+
+
+@app.post("/synthesize/chain", response_model=Dict)
+def synthesize_chain(
+    request: ChainRequest,
+    background_tasks: BackgroundTasks,
+):
+    chain_id = str(uuid.uuid4())
+    job_ids = []
+
+    for i, item in enumerate(request.items):
+        text = item.text.strip()
+        if not text:
+            continue
+        text = enhance_text(text, item.auto_punctuate, item.tone_id)
+        style = merge_style_prompt(item.style, item.voice_prompt)
+
+        job_id = str(uuid.uuid4())
+        job_ids.append(job_id)
+        job_store.create(job_id, status="queued", chain_id=chain_id, chain_index=i)
+
+    background_tasks.add_task(
+        _run_chain,
+        chain_id,
+        job_ids,
+        [item.model_dump() for item in request.items],
+        request.parallel,
+    )
+
+    return {"chain_id": chain_id, "job_ids": job_ids, "status": "queued"}
+
+
+def _run_chain(chain_id: str, job_ids: List[str], items: List[Dict], parallel: bool):
+    from backend.tts import validate_voice_ref
+
+    results = []
+    for i, job_id in enumerate(job_ids):
+        item = items[i]
+        text = item.get("text", "").strip()
+        voice_id = item.get("voice_id")
+        speed = item.get("speed", 1.0)
+        quality = item.get("quality")
+        tone_id = item.get("tone_id")
+        prompt_id = item.get("prompt_id")
+        style = item.get("style") or ""
+        voice_prompt = item.get("voice_prompt") or ""
+        style = merge_style_prompt(style, voice_prompt)
+        voice_ref = item.get("voice_ref")
+
+        job_store.update(job_id, status="running")
+
+        try:
+            if voice_ref and voice_ref.strip():
+                try:
+                    voice_ref = validate_voice_ref(voice_ref)
+                except ValueError:
+                    job_store.update(
+                        job_id, status="failed", error="Invalid voice reference"
+                    )
+                    continue
+
+            start_time = time.perf_counter()
+            result = tts_service.synthesize(
+                text=text,
+                voice_id=voice_id,
+                speed=speed,
+                quality=quality,
+                tone_id=tone_id,
+                prompt_id=prompt_id,
+                style=style,
+                voice_ref=voice_ref,
+                job_id=job_id,
+            )
+            generation_seconds = time.perf_counter() - start_time
+            _record_history(result, text, generation_seconds=generation_seconds)
+            job_store.update(
+                job_id,
+                status="succeeded",
+                audio_url=result.audio_url,
+                duration_seconds=result.duration_seconds,
+                generation_seconds=generation_seconds,
+                model=result.model,
+                voice_id=result.voice_id,
+                source=result.source,
+            )
+            results.append({"job_id": job_id, "status": "succeeded"})
+        except Exception as exc:
+            job_store.update(job_id, status="failed", error=str(exc))
+            results.append({"job_id": job_id, "status": "failed", "error": str(exc)})
+
+    return {"chain_id": chain_id, "results": results}
+
+
+@app.get("/chains/{chain_id}/status")
+def chain_status(chain_id: str):
+    jobs = job_store.list(limit=1000)
+    chain_jobs = [j for j in jobs if getattr(j, "chain_id", None) == chain_id]
+    if not chain_jobs:
+        raise HTTPException(status_code=404, detail="Chain not found")
+
+    total = len(chain_jobs)
+    succeeded = sum(1 for j in chain_jobs if j.status == "succeeded")
+    failed = sum(1 for j in chain_jobs if j.status == "failed")
+    running = sum(
+        1 for j in chain_jobs if j.status in ("running", "processing", "queued")
+    )
+
+    return {
+        "chain_id": chain_id,
+        "total": total,
+        "succeeded": succeeded,
+        "failed": failed,
+        "running": running,
+        "completed": succeeded + failed == total,
+        "jobs": [{"job_id": j.job_id, "status": j.status} for j in chain_jobs],
+    }
 
 
 class LongAudioRequest(BaseModel):
@@ -1734,7 +2116,7 @@ def synthesize_long(
     if not text:
         raise HTTPException(status_code=422, detail="Text payload cannot be empty.")
 
-    text = enhance_text(text, request.auto_punctuate)
+    text = enhance_text(text, request.auto_punctuate, request.tone_id)
     style = merge_style_prompt(request.style, request.voice_prompt)
 
     job_id = str(uuid.uuid4())
@@ -1819,6 +2201,7 @@ def _run_long_job(
     from backend.tts import chunk_audio_files
 
     job_store.update(job_id, status="running")
+    start_time = None
     try:
         start_time = time.perf_counter()
         chunks = _split_text_into_chunks(text, chunk_size)
@@ -2045,7 +2428,7 @@ def _run_long_job(
             )
 
     except Exception as exc:
-        generation_seconds = time.perf_counter() - start_time
+        generation_seconds = (time.perf_counter() - start_time) if start_time else None
         return job_store.update(
             job_id,
             status="failed",
