@@ -20,12 +20,19 @@ def _load_dia2(model_path: str):
     from backend.third_party.dia2 import Dia2
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    use_cuda_graph = torch.cuda.is_available()
     dtype = "bfloat16" if device == "cuda" else "float32"
+
+    print(
+        json.dumps(
+            {"device": device, "use_cuda_graph": use_cuda_graph, "dtype": dtype}
+        ),
+        file=sys.stderr,
+    )
 
     return Dia2.from_local(
         config_path=f"{model_path}/config.json",
         weights_path=f"{model_path}/model.safetensors",
-        # Use local tokenizer files from the downloaded model folder.
         tokenizer_id=model_path,
         device=device,
         dtype=dtype,
@@ -57,10 +64,11 @@ def _run_single(args: List[str]) -> None:
     from backend.third_party.dia2 import GenerationConfig, SamplingConfig
 
     dia = _load_dia2(model_path)
+    use_cuda_graph = torch.cuda.is_available()
     config = GenerationConfig(
         cfg_scale=cfg_scale,
         audio=SamplingConfig(temperature=temperature, top_k=top_k),
-        use_cuda_graph=False,
+        use_cuda_graph=use_cuda_graph,
     )
 
     result = dia.generate(text, config=config)
@@ -96,10 +104,11 @@ def _run_batch(payload_path: str) -> None:
     from backend.third_party.dia2 import GenerationConfig, SamplingConfig
 
     dia = _load_dia2(model_path)
+    use_cuda_graph = torch.cuda.is_available()
     config = GenerationConfig(
         cfg_scale=cfg_scale,
         audio=SamplingConfig(temperature=temperature, top_k=top_k),
-        use_cuda_graph=False,
+        use_cuda_graph=use_cuda_graph,
     )
 
     results = []

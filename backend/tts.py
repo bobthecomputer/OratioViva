@@ -678,11 +678,11 @@ class TTSService:
 
     @staticmethod
     def _dia2_timeout_seconds() -> int:
-        return max(60, int(os.getenv("ORATIO_DIA2_TIMEOUT", "300")))
+        return max(120, int(os.getenv("ORATIO_DIA2_TIMEOUT", "600")))
 
     @staticmethod
     def _dia2_batch_timeout_seconds() -> int:
-        return max(120, int(os.getenv("ORATIO_DIA2_BATCH_TIMEOUT", "1200")))
+        return max(300, int(os.getenv("ORATIO_DIA2_BATCH_TIMEOUT", "1800")))
 
     def _ensure_qwen_tts_deps(self, python_exe: Path) -> None:
         """Install qwen-tts deps into the heavy venv if missing."""

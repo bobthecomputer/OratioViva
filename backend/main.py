@@ -23,6 +23,31 @@ from backend.cleanup import run_from_env
 from backend.jobs import JobStatus, JobStore
 from backend.models import ModelManager
 from backend.tts import TTSService, VOICE_PRESETS, AudioResult, chunk_audio_files
+from backend.prompt_pipeline import PromptPipeline
+from backend.smart_latex_processor import smart_process_latex
+
+
+def _looks_like_latex(text: str) -> bool:
+    """Detect if text appears to be a LaTeX document."""
+    latex_markers = [
+        r"\\documentclass",
+        r"\\begin\{document\}",
+        r"\\section\{",
+        r"\\subsection\{",
+        r"\\begin\{equation\}",
+        r"\\begin\{itemize\}",
+        r"\\begin\{enumerate\}",
+        r"\\begin\{masterformula\}",
+        r"\\begin\{explanation\}",
+        r"\\begin\{watchout\}",
+        r"\$[^$]*\$",  # Inline math
+        r"\$\$",  # Display math
+    ]
+    text_lower = text[:5000].lower()  # Check first 5000 chars
+    matches = sum(
+        1 for marker in latex_markers if re.search(marker, text, re.IGNORECASE)
+    )
+    return matches >= 2
 
 
 def resolve_base_dir() -> Path:
@@ -733,6 +758,22 @@ class SynthesisRequest(BaseModel):
     voice_ref: Optional[str] = Field(
         None,
         description="Optional voice reference (path or URL) for voice cloning models.",
+    )
+    mode: Optional[str] = Field(
+        "default",
+        description="Processing mode: default | study | article.",
+    )
+    latex_speak_mode: Optional[str] = Field(
+        "math",
+        description="How to speak LaTeX: math | literal.",
+    )
+    latex_verbosity: Optional[str] = Field(
+        "short",
+        description="Equation verbosity: short | detailed.",
+    )
+    latex_literal: bool = Field(
+        False,
+        description="Whether to speak LaTeX literally without conversion.",
     )
 
 
@@ -1544,6 +1585,7 @@ def _run_job(
     tone_id: Optional[str],
     prompt_id: Optional[str],
     style: Optional[str],
+    voice_prompt: Optional[str],
     voice_ref: Optional[str],
 ) -> JobStatus:
     from backend.tts import validate_voice_ref
@@ -1569,6 +1611,7 @@ def _run_job(
             tone_id=tone_id,
             prompt_id=prompt_id,
             style=style,
+            voice_prompt=voice_prompt,
             voice_ref=voice_ref,
             job_id=job_id,
         )
@@ -1604,8 +1647,28 @@ def synthesize(
             detail="Long text exceeds maximum allowed length.",
         )
 
-    text = enhance_text(text, request.auto_punctuate, request.tone_id)
-    style = merge_style_prompt(request.style, request.voice_prompt)
+    from backend.tts import VOICE_BY_ID
+
+    voice = VOICE_BY_ID.get(request.voice_id)
+    model_name = voice.model if voice else None
+
+    pipeline = PromptPipeline(debug_mode=False, hf_token=HF_TOKEN)
+    composed = pipeline.compose(
+        text=text,
+        mode=request.mode or "default",
+        tone_id=request.tone_id,
+        prompt_id=request.prompt_id,
+        style=request.style,
+        voice_prompt=request.voice_prompt,
+        voice_id=request.voice_id,
+        auto_punctuate=request.auto_punctuate,
+        latex_speak_mode=request.latex_speak_mode or "math",
+        latex_verbosity=request.latex_verbosity or "short",
+        latex_literal=request.latex_literal or False,
+        model_name=model_name,
+    )
+
+    processed_text = composed.preprocessed_text
 
     if request.voice_ref and request.voice_ref.strip():
         ext = Path(request.voice_ref).suffix.lower()
@@ -1623,13 +1686,14 @@ def synthesize(
         background_tasks.add_task(
             _run_job,
             job_id,
-            text,
+            processed_text,
             request.voice_id,
             request.speed,
             request.quality,
             request.tone_id,
             request.prompt_id,
-            style,
+            composed.style_prompt,
+            composed.voice_prompt,
             request.voice_ref,
         )
         job = job_store.get(job_id)
@@ -1638,13 +1702,14 @@ def synthesize(
 
     job = _run_job(
         job_id,
-        text,
+        processed_text,
         request.voice_id,
         request.speed,
         request.quality,
         request.tone_id,
         request.prompt_id,
-        style,
+        composed.style_prompt,
+        composed.voice_prompt,
         request.voice_ref,
     )
     return JobStatusResponse(**job.__dict__)
@@ -2019,8 +2084,8 @@ def _run_chain(chain_id: str, job_ids: List[str], items: List[Dict], parallel: b
         tone_id = item.get("tone_id")
         prompt_id = item.get("prompt_id")
         style = item.get("style") or ""
-        voice_prompt = item.get("voice_prompt") or ""
-        style = merge_style_prompt(style, voice_prompt)
+        voice_prompt_raw = item.get("voice_prompt") or ""
+        style = merge_style_prompt(style, voice_prompt_raw)
         voice_ref = item.get("voice_ref")
 
         job_store.update(job_id, status="running")
@@ -2044,6 +2109,7 @@ def _run_chain(chain_id: str, job_ids: List[str], items: List[Dict], parallel: b
                 tone_id=tone_id,
                 prompt_id=prompt_id,
                 style=style,
+                voice_prompt=voice_prompt_raw,
                 voice_ref=voice_ref,
                 job_id=job_id,
             )
@@ -2103,6 +2169,10 @@ class LongAudioRequest(BaseModel):
     auto_punctuate: bool = Field(False)
     style: Optional[str] = Field(None)
     voice_ref: Optional[str] = Field(None)
+    mode: Optional[str] = Field("default")
+    latex_speak_mode: Optional[str] = Field("math")
+    latex_verbosity: Optional[str] = Field("short")
+    latex_literal: bool = Field(False)
     chunk_size: int = Field(2000, ge=500, le=12000)
     parallel: bool = Field(False)
 
@@ -2116,7 +2186,17 @@ def synthesize_long(
     if not text:
         raise HTTPException(status_code=422, detail="Text payload cannot be empty.")
 
-    text = enhance_text(text, request.auto_punctuate, request.tone_id)
+    # Smart process LaTeX if detected
+    if _looks_like_latex(text):
+        text = smart_process_latex(
+            text,
+            mode=request.mode or "default",
+            latex_speak_mode=request.latex_speak_mode or "math",
+            latex_verbosity=request.latex_verbosity or "short",
+        )
+    else:
+        text = enhance_text(text, request.auto_punctuate, request.tone_id)
+
     style = merge_style_prompt(request.style, request.voice_prompt)
 
     job_id = str(uuid.uuid4())
@@ -2132,6 +2212,7 @@ def synthesize_long(
         request.tone_id,
         request.prompt_id,
         style,
+        request.voice_prompt,
         request.voice_ref,
         request.chunk_size,
         request.parallel,
@@ -2182,6 +2263,7 @@ def _run_long_job(
     tone_id: Optional[str],
     prompt_id: Optional[str],
     style: Optional[str],
+    voice_prompt: Optional[str],
     voice_ref: Optional[str],
     chunk_size: int,
     parallel: bool,
@@ -2208,7 +2290,18 @@ def _run_long_job(
         total_chunks = len(chunks)
 
         if total_chunks == 1:
-            return _run_job(job_id, text, voice_id, speed, quality, style, voice_ref)
+            return _run_job(
+                job_id,
+                text,
+                voice_id,
+                speed,
+                quality,
+                tone_id,
+                prompt_id,
+                style,
+                voice_prompt,
+                voice_ref,
+            )
 
         from backend.tts import VOICE_BY_ID
 
@@ -2320,6 +2413,7 @@ def _run_long_job(
                         tone_id=tone_id,
                         prompt_id=prompt_id,
                         style=style,
+                        voice_prompt=voice_prompt,
                         voice_ref=voice_ref,
                         job_id=cid,
                     )
@@ -2356,6 +2450,7 @@ def _run_long_job(
                         tone_id=tone_id,
                         prompt_id=prompt_id,
                         style=style,
+                        voice_prompt=voice_prompt,
                         voice_ref=voice_ref,
                         job_id=cid,
                     )

@@ -42,7 +42,7 @@ def load_file_into_model(
     load_file_into_model(model, "./my_folder/bert.safetensors", device="cuda")
     ```
     """
-    state_dict = model.state_dict() # This is a shallow copy.
+    state_dict = model.state_dict()  # This is a shallow copy.
     with safe_open(filename, framework="pt", device=device) as f:
         for key in f.keys():
             if key in state_dict:
@@ -79,7 +79,7 @@ def build_runtime(
     device_obj = torch.device(device)
     if device_obj.type == "cuda":
         cuda_matmul = torch.backends.cuda.matmul
-        cudnn_conv = torch.backends.cudnn.conv
+        cudnn_conv = getattr(torch.backends.cudnn, "conv", None)
         if hasattr(cuda_matmul, "fp32_precision"):
             cuda_matmul.fp32_precision = "tf32"
             with warnings.catch_warnings():
@@ -90,16 +90,9 @@ def build_runtime(
                 torch.backends.cuda.matmul.allow_tf32 = True
         else:  # pragma: no cover - compatibility with older PyTorch
             torch.backends.cuda.matmul.allow_tf32 = True
-        if hasattr(cudnn_conv, "fp32_precision"):
+        if cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
             cudnn_conv.fp32_precision = "tf32"
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message="Please use the new API settings",
-                )
-                torch.backends.cudnn.allow_tf32 = True
-        else:  # pragma: no cover
-            torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     precision = resolve_precision(dtype_pref, device_obj)
     config = load_config(config_path)
     model = Dia2Model(config, precision, device=device_obj)
@@ -107,7 +100,9 @@ def build_runtime(
 
     tokenizer_ref = tokenizer_id or config.assets.tokenizer or repo_id
     if tokenizer_ref is None:
-        raise ValueError("Tokenizer id is missing. Provide --tokenizer or add assets.tokenizer to the config.")
+        raise ValueError(
+            "Tokenizer id is missing. Provide --tokenizer or add assets.tokenizer to the config."
+        )
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_ref,
         use_fast=False,
@@ -124,8 +119,12 @@ def build_runtime(
         pad=data_cfg.text_pad_token_id,
         bos=getattr(tokenizer, "bos_token_id", 1) or 1,
         zero=data_cfg.text_zero_token_id,
-        spk1=tokenizer.convert_tokens_to_ids("[S1]") if "[S1]" in tokenizer.get_vocab() else data_cfg.text_new_word_token_id,
-        spk2=tokenizer.convert_tokens_to_ids("[S2]") if "[S2]" in tokenizer.get_vocab() else data_cfg.text_new_word_token_id,
+        spk1=tokenizer.convert_tokens_to_ids("[S1]")
+        if "[S1]" in tokenizer.get_vocab()
+        else data_cfg.text_new_word_token_id,
+        spk2=tokenizer.convert_tokens_to_ids("[S2]")
+        if "[S2]" in tokenizer.get_vocab()
+        else data_cfg.text_new_word_token_id,
         audio_pad=data_cfg.audio_pad_token_id,
         audio_bos=data_cfg.audio_bos_token_id,
     )
@@ -136,7 +135,11 @@ def build_runtime(
         initial_padding=0,
     )
     audio_delays = list(data_cfg.delay_pattern)
-    audio_delay_tensor = torch.tensor(audio_delays, device=device_obj, dtype=torch.long) if audio_delays else torch.empty(0, dtype=torch.long, device=device_obj)
+    audio_delay_tensor = (
+        torch.tensor(audio_delays, device=device_obj, dtype=torch.long)
+        if audio_delays
+        else torch.empty(0, dtype=torch.long, device=device_obj)
+    )
     frame_rate = getattr(mimi, "frame_rate", 75.0)
 
     runtime = RuntimeContext(
