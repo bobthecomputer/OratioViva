@@ -15,6 +15,7 @@ if (typeof window !== "undefined" && window.__TAURI__) {
 import {
   createSynthesis,
   createLongSynthesis,
+  createChain,
   deleteHistory,
   deleteHistoryBatch,
   deleteJob,
@@ -24,10 +25,12 @@ import {
   deleteDownloadedModel,
   exportZip,
   exportMp3,
+  exportManifest,
   fetchAnalytics,
   fetchHistory,
   fetchJob,
   fetchJobs,
+  fetchChainStatus,
   fetchModelStatus,
   fetchSettings,
   fetchVoices,
@@ -122,6 +125,124 @@ const storage = {
     } catch {}
   },
 };
+
+const STORAGE_KEYS = {
+  projects: "oratioviva_projects",
+  activeProject: "oratioviva_active_project",
+  pronunciation: "oratioviva_pronunciation_map",
+  historyNotes: "oratioviva_history_notes",
+  historyStars: "oratioviva_history_stars",
+  synthesisCache: "oratioviva_synthesis_cache",
+  customTemplates: "oratioviva_custom_templates",
+  proMode: "oratioviva_pro_mode",
+};
+
+const QUICKSTART_TEMPLATES = [
+  {
+    id: "student-summary",
+    category: "student",
+    title: "Lecture Summary",
+    description: "Summarize a chapter with clear pauses.",
+    text: "Title: Cellular Respiration\n\nKey idea: Cells convert glucose into ATP through glycolysis, the Krebs cycle, and the electron transport chain.\n\nExplain the steps in simple terms, then list 3 key takeaways.",
+    settings: { mode: "study", speed: 0.9, quality: "balanced" },
+  },
+  {
+    id: "student-quiz",
+    category: "student",
+    title: "Self-Quiz",
+    description: "Turn notes into a quick study drill.",
+    text: "Topic: World War II\n\nQuestion 1: What event triggered the start of WWII?\nAnswer: ...\n\nQuestion 2: Name two major Allied powers.\nAnswer: ...",
+    settings: { mode: "study", speed: 1.0, quality: "balanced" },
+  },
+  {
+    id: "pro-brief",
+    category: "pro",
+    title: "Executive Brief",
+    description: "Concise update for stakeholders.",
+    text: "Executive Brief\n\nThis week we shipped the onboarding flow, reducing drop-off by 18%. Next, we are focusing on performance, search, and template onboarding to improve time-to-value.",
+    settings: { mode: "article", speed: 1.0, quality: "quality" },
+  },
+  {
+    id: "pro-script",
+    category: "pro",
+    title: "Narrated Script",
+    description: "Use multi-voice dialog lines.",
+    text: "Host: Welcome to the weekly update.\nGuest: Thanks for having me.\nHost: Let's dive into the new features.\nGuest: We shipped batch exports and a faster model flow.",
+    settings: { mode: "article", speed: 1.0, quality: "balanced" },
+  },
+];
+
+function loadJson(key, fallback) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = storage.get(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key, value) {
+  if (typeof window === "undefined") return;
+  try {
+    storage.set(key, JSON.stringify(value));
+  } catch {}
+}
+
+function hashString(input) {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function makeSynthesisCacheKey(payload) {
+  const normalized = {
+    text: payload.text || "",
+    voice_id: payload.voice_id || "",
+    speed: payload.speed || 1,
+    quality: payload.quality || "",
+    tone_id: payload.tone_id || "",
+    prompt_id: payload.prompt_id || "",
+    voice_prompt: payload.voice_prompt || "",
+    auto_punctuate: Boolean(payload.auto_punctuate),
+    style: payload.style || "",
+    voice_ref: payload.voice_ref || "",
+    mode: payload.mode || "default",
+    latex_speak_mode: payload.latex_speak_mode || "math",
+    latex_verbosity: payload.latex_verbosity || "short",
+    latex_literal: Boolean(payload.latex_literal),
+  };
+  return hashString(JSON.stringify(normalized));
+}
+
+function escapeRegex(input) {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function applyPronunciationMap(text, entries) {
+  if (!text || !entries?.length) return text;
+  return entries.reduce((result, entry) => {
+    if (!entry?.from || !entry?.to) return result;
+    const pattern = new RegExp(escapeRegex(entry.from), "g");
+    return result.replace(pattern, entry.to);
+  }, text);
+}
+
+function splitIntoSentences(text) {
+  if (!text) return [];
+  const paragraphs = text.split(/\n+/).map((part) => part.trim()).filter(Boolean);
+  const sentences = [];
+  for (const paragraph of paragraphs) {
+    const matches = paragraph.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+    if (matches) {
+      sentences.push(...matches.map((s) => s.trim()).filter(Boolean));
+    }
+  }
+  return sentences;
+}
 
 function formatBytes(bytes) {
   if (bytes <= 0) return "—";
@@ -576,6 +697,8 @@ function SettingsPanel({
   onChangePerfProfile,
   readingSpeed,
   onChangeReadingSpeed,
+  proMode,
+  onChangeProMode,
   hfTokenStatus,
   hfTokenInput,
   onChangeHfTokenInput,
@@ -684,18 +807,27 @@ function SettingsPanel({
         </div>
 
         <div className="settings-section">
-          <h3>{t("settings.generalTitle", "General")}</h3>
+          <h3>{t("settings.generalTitle")}</h3>
           <label className="checkbox-row">
             <input
               type="checkbox"
               checked={showTutorialOnStartup}
               onChange={(e) => {
-                setShowTutorialOnStartup(e.target.checked);
+                onChangeShowTutorialOnStartup(e.target.checked);
                 storage.set("oratioviva_show_tutorial", String(e.target.checked));
               }}
             />
             <span>{t("settings.showTutorialLabel")}</span>
           </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={proMode}
+              onChange={(e) => onChangeProMode(e.target.checked)}
+            />
+            <span>{t("settings.proModeLabel")}</span>
+          </label>
+          <p className="muted small">{t("settings.proModeHint")}</p>
         </div>
 
         <div className="settings-section">
@@ -749,6 +881,205 @@ function SettingsPanel({
               <p className="muted">{t("settings.hfTokenNotSet")}</p>
             )}
             {hfTokenMessage && <p className="status">{hfTokenMessage}</p>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TemplatesPanel({ t, onClose, templates, onSave, onDelete, onApply, seed }) {
+  const defaultSettings = {
+    mode: "default",
+    speed: 1,
+    quality: "balanced",
+  };
+  const buildDraft = (inputSeed) => ({
+    id: "",
+    title: "",
+    description: "",
+    category: "student",
+    text: inputSeed?.text || "",
+    settings: { ...defaultSettings, ...(inputSeed?.settings || {}) },
+  });
+  const [draft, setDraft] = useState(() => buildDraft(seed));
+
+  useEffect(() => {
+    if (seed?.stamp) {
+      setDraft(buildDraft(seed));
+    }
+  }, [seed?.stamp]);
+
+  const updateDraft = (field, value) => {
+    setDraft((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateDraftSetting = (field, value) => {
+    setDraft((prev) => ({
+      ...prev,
+      settings: { ...prev.settings, [field]: value },
+    }));
+  };
+
+  const handleSave = () => {
+    if (!draft.title.trim() || !draft.text.trim()) return;
+    const payload = {
+      ...draft,
+      id: draft.id || `template-${Date.now()}`,
+      settings: { ...defaultSettings, ...(draft.settings || {}) },
+    };
+    onSave(payload);
+    setDraft(buildDraft(seed));
+  };
+
+  const handleEdit = (template) => {
+    setDraft({
+      ...template,
+      settings: { ...defaultSettings, ...(template.settings || {}) },
+    });
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content templates-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("templates.manageTitle")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+        <p className="modal-description">{t("templates.manageSubtitle")}</p>
+
+        <div className="templates-list">
+          {templates.length === 0 && (
+            <p className="muted">{t("templates.empty")}</p>
+          )}
+          {templates.map((template) => (
+            <div key={template.id} className="template-item">
+              <div className="row space">
+                <div>
+                  <strong>{template.title}</strong>
+                  <div className="row">
+                    <span className="tag subtle">{t(`templates.category.${template.category || "student"}`)}</span>
+                    <span className="muted small">{template.settings?.mode || "default"}</span>
+                    <span className="muted small">{template.settings?.quality || "balanced"}</span>
+                  </div>
+                </div>
+                <div className="row">
+                  <button type="button" className="ghost small" onClick={() => onApply(template)}>
+                    {t("templates.apply")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => handleEdit(template)}>
+                    {t("templates.edit")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => onDelete(template.id)}>
+                    {t("templates.delete")}
+                  </button>
+                </div>
+              </div>
+              {template.description && <p className="muted small">{template.description}</p>}
+            </div>
+          ))}
+        </div>
+
+        <div className="template-editor">
+          <div className="row space">
+            <div>
+              <h3>{draft.id ? t("templates.editTitle") : t("templates.createTitle")}</h3>
+              <p className="muted small">{t("templates.createSubtitle")}</p>
+            </div>
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() => {
+                if (!seed) return;
+                setDraft((prev) => ({
+                  ...prev,
+                  text: seed.text || prev.text,
+                  settings: { ...prev.settings, ...(seed.settings || {}) },
+                }));
+              }}
+            >
+              {t("templates.useCurrent")}
+            </button>
+          </div>
+          <div className="field">
+            <label className="label">{t("templates.formTitle")}</label>
+            <input
+              className="input"
+              value={draft.title}
+              onChange={(e) => updateDraft("title", e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label className="label">{t("templates.formDescription")}</label>
+            <input
+              className="input"
+              value={draft.description}
+              onChange={(e) => updateDraft("description", e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label className="label">{t("templates.formCategory")}</label>
+            <select
+              className="input"
+              value={draft.category}
+              onChange={(e) => updateDraft("category", e.target.value)}
+            >
+              <option value="student">{t("templates.filterStudent")}</option>
+              <option value="pro">{t("templates.filterPro")}</option>
+            </select>
+          </div>
+          <div className="field">
+            <label className="label">{t("templates.formText")}</label>
+            <textarea
+              className="input textarea"
+              rows={4}
+              value={draft.text}
+              onChange={(e) => updateDraft("text", e.target.value)}
+            />
+          </div>
+          <div className="template-settings">
+            <div className="field">
+              <label className="label">{t("templates.formMode")}</label>
+              <select
+                className="input"
+                value={draft.settings?.mode || "default"}
+                onChange={(e) => updateDraftSetting("mode", e.target.value)}
+              >
+                <option value="default">{t("form.modeDefault")}</option>
+                <option value="study">{t("form.modeStudy")}</option>
+                <option value="article">{t("form.modeArticle")}</option>
+              </select>
+            </div>
+            <div className="field">
+              <label className="label">{t("templates.formQuality")}</label>
+              <select
+                className="input"
+                value={draft.settings?.quality || "balanced"}
+                onChange={(e) => updateDraftSetting("quality", e.target.value)}
+              >
+                <option value="fast">{t("form.qualityFast")}</option>
+                <option value="balanced">{t("form.qualityBalanced")}</option>
+                <option value="quality">{t("form.qualityQuality")}</option>
+              </select>
+            </div>
+            <div className="field">
+              <label className="label">{t("templates.formSpeed")}</label>
+              <input
+                className="input"
+                type="number"
+                step="0.1"
+                min="0.6"
+                max="1.5"
+                value={draft.settings?.speed ?? 1}
+                onChange={(e) => updateDraftSetting("speed", parseFloat(e.target.value))}
+              />
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button className="ghost" onClick={onClose}>{t("templates.close")}</button>
+            <button className="button" onClick={handleSave}>
+              {draft.id ? t("templates.update") : t("templates.save")}
+            </button>
           </div>
         </div>
       </div>
@@ -829,6 +1160,57 @@ function GuidedTour({ t, tourSteps, currentStep, onNext, onPrev, onSkip }) {
   );
 }
 
+function FirstRunGuide({ t, onClose, onStartTour }) {
+  const steps = [
+    { title: t("firstRun.welcomeTitle"), content: t("firstRun.welcomeContent") },
+    { title: t("firstRun.setupTitle"), content: t("firstRun.setupContent") },
+    { title: t("firstRun.voiceBrowserTitle"), content: t("firstRun.voiceBrowserContent") },
+    { title: t("firstRun.textInputTitle"), content: t("firstRun.textInputContent") },
+    { title: t("firstRun.customizationTitle"), content: t("firstRun.customizationContent") },
+    { title: t("firstRun.generationTitle"), content: t("firstRun.generationContent") },
+    { title: t("firstRun.historyQueueTitle"), content: t("firstRun.historyQueueContent") },
+    { title: t("firstRun.exportsSettingsTitle"), content: t("firstRun.exportsSettingsContent") },
+    { title: t("firstRun.readyTitle"), content: t("firstRun.readyContent") },
+  ];
+  const [index, setIndex] = useState(0);
+  const step = steps[index] || steps[0];
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content first-run" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("firstRun.welcomeTitle")}</h2>
+          <button className="ghost modal-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="first-run-body">
+          <h3>{step.title}</h3>
+          <p className="muted">{step.content}</p>
+          <div className="first-run-dots">
+            {steps.map((_, i) => (
+              <span key={i} className={`tour-dot ${i === index ? "active" : ""}`} />
+            ))}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="ghost" onClick={onClose}>{t("firstRun.skip")}</button>
+          <button className="ghost" onClick={() => setIndex(Math.max(0, index - 1))} disabled={index === 0}>
+            {t("firstRun.back")}
+          </button>
+          {index < steps.length - 1 ? (
+            <button className="button" onClick={() => setIndex(index + 1)}>
+              {t("firstRun.next")}
+            </button>
+          ) : (
+            <button className="button" onClick={onStartTour || onClose}>
+              {t("firstRun.getStarted")}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ShortcutsModal({ t, onClose }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -859,11 +1241,137 @@ function ShortcutsModal({ t, onClose }) {
   );
 }
 
-function ChainModal({ t, onClose, onStart, presets, voices, currentVoice }) {
-  const [items, setItems] = useState([{ text: "", voiceId: "", toneId: "", promptId: "" }]);
+function LongAudioModal({ t, text, voiceId, onConfirm, onCancel }) {
+  const [chunkSize, setChunkSize] = useState(2000);
+  const [parallel, setParallel] = useState(false);
+  const [autoOptimize, setAutoOptimize] = useState(true);
+
+  const textLength = text.length;
+  const estimatedChunks = Math.ceil(textLength / chunkSize);
+  const estimatedTime = Math.ceil(textLength / 500);
+
+  useEffect(() => {
+    if (autoOptimize) {
+      const optimalChunkSize = Math.min(3000, Math.max(1000, Math.floor(textLength / 10)));
+      setChunkSize(optimalChunkSize);
+    }
+  }, [autoOptimize, textLength]);
+
+  const handleConfirm = () => {
+    onConfirm({
+      chunkSize,
+      parallel,
+    });
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>{t("longAudio.title")}</h2>
+          <button className="ghost modal-close" onClick={onCancel}>✕</button>
+        </div>
+        <div className="long-audio-modal">
+          <p className="modal-info">
+            {t("longAudio.description", { length: textLength, chunks: estimatedChunks })}
+          </p>
+
+          <div className="field">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={autoOptimize}
+                onChange={(e) => setAutoOptimize(e.target.checked)}
+              />
+              <span>{t("longAudio.autoOptimize")}</span>
+            </label>
+          </div>
+
+          {!autoOptimize && (
+            <div className="field">
+              <label className="label">{t("longAudio.chunkSize")}</label>
+              <input
+                type="number"
+                className="input"
+                value={chunkSize}
+                onChange={(e) => setChunkSize(parseInt(e.target.value) || 2000)}
+                min={500}
+                max={10000}
+                step={100}
+              />
+              <p className="muted small">
+                {t("longAudio.chunkSizeHint", { chunks: Math.ceil(textLength / chunkSize) })}
+              </p>
+            </div>
+          )}
+
+          <div className="field">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={parallel}
+                onChange={(e) => setParallel(e.target.checked)}
+              />
+              <span>{t("longAudio.parallel")}</span>
+            </label>
+            <p className="muted small">{t("longAudio.parallelHint")}</p>
+          </div>
+
+          <div className="long-audio-summary">
+            <div className="summary-item">
+              <span className="summary-label">{t("longAudio.textLength")}:</span>
+              <span className="summary-value">{textLength} {t("longAudio.chars")}</span>
+            </div>
+            <div className="summary-item">
+              <span className="summary-label">{t("longAudio.estimatedChunks")}:</span>
+              <span className="summary-value">{Math.ceil(textLength / chunkSize)}</span>
+            </div>
+            <div className="summary-item">
+              <span className="summary-label">{t("longAudio.estimatedTime")}:</span>
+              <span className="summary-value">~{estimatedTime} {t("longAudio.seconds")}</span>
+            </div>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="button ghost" onClick={onCancel}>{t("diagnostics.cancel")}</button>
+          <button className="button primary" onClick={handleConfirm}>{t("longAudio.start")}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChainModal({ t, onClose, onStart, voices, currentVoice, initialItems }) {
+  const [items, setItems] = useState(
+    initialItems?.length ? initialItems : [{ text: "", voiceId: "", toneId: "", promptId: "", speaker: "" }],
+  );
+  const [parallel, setParallel] = useState(false);
+  const speakers = useMemo(
+    () => Array.from(new Set(items.map((item) => item.speaker).filter(Boolean))),
+    [items],
+  );
+  const [speakerMap, setSpeakerMap] = useState({});
+
+  useEffect(() => {
+    if (initialItems?.length) {
+      setItems(initialItems);
+    }
+  }, [initialItems]);
+
+  useEffect(() => {
+    setSpeakerMap((prev) => {
+      const next = { ...prev };
+      speakers.forEach((speaker) => {
+        if (!next[speaker]) {
+          next[speaker] = "";
+        }
+      });
+      return next;
+    });
+  }, [speakers]);
 
   const addItem = () => {
-    setItems([...items, { text: "", voiceId: "", toneId: "", promptId: "" }]);
+    setItems([...items, { text: "", voiceId: "", toneId: "", promptId: "", speaker: "" }]);
   };
 
   const removeItem = (index) => {
@@ -876,6 +1384,13 @@ function ChainModal({ t, onClose, onStart, presets, voices, currentVoice }) {
     setItems(newItems);
   };
 
+  const handleSpeakerVoice = (speaker, voiceId) => {
+    setSpeakerMap((prev) => ({ ...prev, [speaker]: voiceId }));
+    setItems((prev) =>
+      prev.map((item) => (item.speaker === speaker ? { ...item, voiceId } : item)),
+    );
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content chain-modal" onClick={e => e.stopPropagation()}>
@@ -883,6 +1398,33 @@ function ChainModal({ t, onClose, onStart, presets, voices, currentVoice }) {
           <h2>{t("chain.title")}</h2>
           <button className="ghost modal-close" onClick={onClose}>✕</button>
         </div>
+        {speakers.length > 0 && (
+          <div className="chain-speaker-map">
+            <p className="muted">{t("chain.speakerMap")}</p>
+            <div className="chain-speaker-grid">
+              {speakers.map((speaker) => (
+                <div key={speaker} className="chain-speaker-row">
+                  <span className="tag subtle">{speaker}</span>
+                  <select
+                    className="input small"
+                    value={speakerMap[speaker] || ""}
+                    onChange={(e) => handleSpeakerVoice(speaker, e.target.value)}
+                  >
+                    <option value="">
+                      {t("chain.useCurrentVoice", { voice: currentVoice?.label || currentVoice?.id || "" })}
+                    </option>
+                    {voices.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.label || v.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="chain-items">
           {items.map((item, index) => (
             <div key={index} className="chain-item">
@@ -894,33 +1436,49 @@ function ChainModal({ t, onClose, onStart, presets, voices, currentVoice }) {
                   </button>
                 )}
               </div>
+              <div className="row">
+                <input
+                  className="input small"
+                  placeholder={t("chain.speakerPlaceholder")}
+                  value={item.speaker || ""}
+                  onChange={(e) => updateItem(index, "speaker", e.target.value)}
+                />
+                <select
+                  className="input small"
+                  value={item.voiceId}
+                  onChange={(e) => updateItem(index, "voiceId", e.target.value)}
+                >
+                  <option value="">{t("chain.useCurrentVoice", { voice: currentVoice?.label || currentVoice?.id || "" })}</option>
+                  {voices.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.label || v.id}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <textarea
                 className="input"
                 placeholder={t("form.placeholder")}
                 value={item.text}
                 onChange={(e) => updateItem(index, "text", e.target.value)}
               />
-              <div className="chain-item-settings">
-                <select
-                  className="input"
-                  value={item.voiceId}
-                  onChange={(e) => updateItem(index, "voiceId", e.target.value)}
-                >
-                  <option value="">{t("form.voiceLabel")}...</option>
-                  {voices.map(v => (
-                    <option key={v.id} value={v.id}>{v.label || v.id}</option>
-                  ))}
-                </select>
-              </div>
             </div>
           ))}
         </div>
+        <label className="checkbox-row" style={{ marginTop: "0.75rem" }}>
+          <input
+            type="checkbox"
+            checked={parallel}
+            onChange={(e) => setParallel(e.target.checked)}
+          />
+          <span>{t("chain.parallel")}</span>
+        </label>
         <button className="ghost" onClick={addItem}>+ {t("chain.addItem")}</button>
         <div className="modal-footer">
           <button className="ghost" onClick={onClose}>{t("cleanup.cancel")}</button>
           <button
             className="button"
-            onClick={() => onStart(items)}
+            onClick={() => onStart(items, { parallel })}
             disabled={items.every(i => !i.text.trim())}
           >
             {t("chain.startChain")}
@@ -1163,6 +1721,7 @@ function CleanupPanel({ t, onClose, diagnostics }) {
 
 export default function App() {
   const { t, lang, changeLanguage, loading: i18nLoading } = useTranslation();
+  const isTestEnv = typeof import.meta !== "undefined" && import.meta.env?.MODE === "test";
 
   const [text, setText] = useState("");
   const [voices, setVoices] = useState([]);
@@ -1217,6 +1776,26 @@ export default function App() {
     if (typeof window === "undefined") return "balanced";
     return storage.get("oratioviva_quality_mode") || "balanced";
   });
+  const [mode, setMode] = useState(() => {
+    if (typeof window === "undefined") return "default";
+    return storage.get("oratioviva_mode") || "default";
+  });
+  const [latexSpeakMode, setLatexSpeakMode] = useState(() => {
+    if (typeof window === "undefined") return "math";
+    return storage.get("oratioviva_latex_speak_mode") || "math";
+  });
+  const [latexVerbosity, setLatexVerbosity] = useState(() => {
+    if (typeof window === "undefined") return "short";
+    return storage.get("oratioviva_latex_verbosity") || "short";
+  });
+  const [latexLiteral, setLatexLiteral] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return storage.get("oratioviva_latex_literal") === "true";
+  });
+  const [debugMode, setDebugMode] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return storage.get("oratioviva_debug_mode") === "true";
+  });
   const [analytics, setAnalytics] = useState(null);
   const [hfTokenStatus, setHfTokenStatus] = useState({
     hf_token_set: false,
@@ -1245,10 +1824,36 @@ export default function App() {
   const [tourStep, setTourStep] = useState(0);
   const [toasts, setToasts] = useState([]);
   const [osNotificationsEnabled, setOsNotificationsEnabled] = useState(false);
+  const [proMode, setProMode] = useState(() => storage.get(STORAGE_KEYS.proMode) === "true");
+  const [showTemplatesPanel, setShowTemplatesPanel] = useState(false);
+  const [templateSeed, setTemplateSeed] = useState(null);
   const [showChainModal, setShowChainModal] = useState(false);
   const [chainItems, setChainItems] = useState([{ text: "", voiceId: "", toneId: "", promptId: "" }]);
-  const [chainProgress, setChainProgress] = useState({ current: 0, total: 0, status: "idle" });
+  const [chainProgress, setChainProgress] = useState({ current: 0, total: 0, status: "idle", chainId: null });
   const [showTutorial, setShowTutorial] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyStarOnly, setHistoryStarOnly] = useState(false);
+  const [jobsQuery, setJobsQuery] = useState("");
+  const [historyNotes, setHistoryNotes] = useState(() => loadJson(STORAGE_KEYS.historyNotes, {}));
+  const [historyStars, setHistoryStars] = useState(() => new Set(loadJson(STORAGE_KEYS.historyStars, [])));
+  const [pronunciationMap, setPronunciationMap] = useState(() => loadJson(STORAGE_KEYS.pronunciation, []));
+  const [projects, setProjects] = useState(() => loadJson(STORAGE_KEYS.projects, []));
+  const [activeProjectId, setActiveProjectId] = useState(() => storage.get(STORAGE_KEYS.activeProject) || "");
+  const [projectNameInput, setProjectNameInput] = useState("");
+  const [templateFilter, setTemplateFilter] = useState("all");
+  const [customTemplates, setCustomTemplates] = useState(() => loadJson(STORAGE_KEYS.customTemplates, []));
+  const [collapsedPanels, setCollapsedPanels] = useState({
+    workspace: false,
+    quickstart: false,
+    studyTools: false,
+    history: false,
+    jobs: false,
+    analytics: false,
+  });
+  const [studyChunkSize, setStudyChunkSize] = useState(3);
+  const [studyRepeatCount, setStudyRepeatCount] = useState(2);
+  const [synthesisCache, setSynthesisCache] = useState(() => loadJson(STORAGE_KEYS.synthesisCache, {}));
+  const textAreaRef = useRef(null);
 
   useEffect(() => {
     const savedVoice = storage.get("oratioviva_voice");
@@ -1332,6 +1937,31 @@ export default function App() {
   }, [qualityMode]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set("oratioviva_mode", mode);
+  }, [mode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set("oratioviva_latex_speak_mode", latexSpeakMode);
+  }, [latexSpeakMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set("oratioviva_latex_verbosity", latexVerbosity);
+  }, [latexVerbosity]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set("oratioviva_latex_literal", latexLiteral ? "true" : "false");
+  }, [latexLiteral]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set("oratioviva_debug_mode", debugMode ? "true" : "false");
+  }, [debugMode]);
+
+  useEffect(() => {
     if (toneId) storage.set("oratioviva_tone_id", toneId);
     else storage.remove("oratioviva_tone_id");
   }, [toneId]);
@@ -1351,6 +1981,69 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    saveJson(STORAGE_KEYS.projects, projects);
+  }, [projects]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.customTemplates, customTemplates);
+  }, [customTemplates]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set(STORAGE_KEYS.proMode, proMode ? "true" : "false");
+  }, [proMode]);
+
+  useEffect(() => {
+    if (proMode) {
+      setCollapsedPanels({
+        workspace: true,
+        quickstart: true,
+        studyTools: true,
+        history: true,
+        jobs: true,
+        analytics: true,
+      });
+    } else {
+      setCollapsedPanels({
+        workspace: false,
+        quickstart: false,
+        studyTools: false,
+        history: false,
+        jobs: false,
+        analytics: false,
+      });
+    }
+  }, [proMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    storage.set(STORAGE_KEYS.activeProject, activeProjectId);
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.pronunciation, pronunciationMap);
+  }, [pronunciationMap]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.historyNotes, historyNotes);
+  }, [historyNotes]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.historyStars, Array.from(historyStars));
+  }, [historyStars]);
+
+  useEffect(() => {
+    saveJson(STORAGE_KEYS.synthesisCache, synthesisCache);
+  }, [synthesisCache]);
+
+  useEffect(() => {
+    const active = projects.find((project) => project.id === activeProjectId);
+    if (active) {
+      setProjectNameInput(active.name || "");
+    }
+  }, [activeProjectId, projects]);
+
+  useEffect(() => {
     if (currentVoice?.model) {
       fetchModelCapabilities(currentVoice.model)
         .then(res => setModelCapabilities(res.capabilities || { style: true, voice_prompt: true, voice_ref: false }))
@@ -1361,7 +2054,7 @@ export default function App() {
   useEffect(() => {
     if (typeof window !== "undefined") {
       const hasSeenGuide = storage.get("oratioviva_has_seen_guide");
-      if (!hasSeenGuide && backendReady) {
+      if (!hasSeenGuide && backendReady && !isTestEnv) {
         setTimeout(() => setShowFirstRunGuide(true), 500);
       }
       // Also show tutorial on startup if enabled
@@ -1768,6 +2461,11 @@ export default function App() {
     storage.set("oratioviva_has_seen_tour", "true");
   }
 
+  function closeFirstRunGuide() {
+    setShowFirstRunGuide(false);
+    storage.set("oratioviva_has_seen_guide", "true");
+  }
+
   async function handleDownloadModel(modelId) {
     const required = getRequiredModelsForModel(modelId);
     if (!required.length) return;
@@ -1780,15 +2478,16 @@ export default function App() {
     }
   }
 
-  async function pollJob(jobId) {
+  async function pollJob(jobId, jobText, jobVoiceId) {
     let attempts = 0;
     const maxAttempts = 180;
     const startedAt = Date.now();
-    const words = countWords(text);
+    const words = countWords(jobText || "");
     const audioSeconds = estimateAudioSeconds(words, readingSpeed);
+    const modelId = getVoiceModelId(jobVoiceId) || currentVoice?.model;
     const estimatedSeconds = estimateGenerationSeconds(
       audioSeconds,
-      currentVoice?.model,
+      modelId,
       perfProfile,
     );
     const statusMessages = [
@@ -1850,7 +2549,40 @@ export default function App() {
       return;
     }
 
-    const isLongAudio = text.length > LONG_TEXT_THRESHOLD || longAudioOptions;
+    const preparedText = applyPronunciationMap(text, pronunciationMap);
+    const isLongAudio = preparedText.length > LONG_TEXT_THRESHOLD || longAudioOptions;
+    const basePayload = {
+      text: preparedText,
+      voice_id: voiceId,
+      speed,
+      quality: qualityMode,
+      tone_id: toneId || undefined,
+      prompt_id: promptId || undefined,
+      voice_prompt: voicePrompt || undefined,
+      auto_punctuate: autoPunctuate,
+      style: style || undefined,
+      voice_ref: voiceRef || undefined,
+      mode,
+      latex_speak_mode: latexSpeakMode,
+      latex_verbosity: latexVerbosity,
+      latex_literal: latexLiteral,
+    };
+    const cacheKey = !isLongAudio ? makeSynthesisCacheKey(basePayload) : null;
+    if (cacheKey) {
+      const cached = synthesisCache[cacheKey];
+      if (cached) {
+        const existing = history.find((item) => item.job_id === cached.job_id && item.audio_url);
+        if (existing) {
+          setStatus(t("status.cacheHit"));
+          return;
+        }
+        setSynthesisCache((prev) => {
+          const next = { ...prev };
+          delete next[cacheKey];
+          return next;
+        });
+      }
+    }
 
     if (isLongAudio && !longAudioOptions) {
       setShowLongAudioModal(true);
@@ -1882,37 +2614,27 @@ export default function App() {
       let job;
       if (isLongAudio && longAudioOptions) {
         job = await createLongSynthesis({
-          text,
-          voice_id: voiceId,
-          speed,
-          quality: qualityMode,
-          tone_id: toneId || undefined,
-          prompt_id: promptId || undefined,
-          voice_prompt: voicePrompt || undefined,
-          auto_punctuate: autoPunctuate,
-          style: style || undefined,
-          voice_ref: voiceRef || undefined,
+          ...basePayload,
           chunk_size: longAudioOptions.chunkSize,
           parallel: longAudioOptions.parallel,
         });
       } else {
         job = await createSynthesis(
-          {
-            text,
-            voice_id: voiceId,
-            speed,
-            quality: qualityMode,
-            tone_id: toneId || undefined,
-            prompt_id: promptId || undefined,
-            voice_prompt: voicePrompt || undefined,
-            auto_punctuate: autoPunctuate,
-            style: style || undefined,
-            voice_ref: voiceRef || undefined,
-          },
+          basePayload,
           { asyncMode: true },
         );
       }
-      await pollJob(job.job_id);
+      const finalJob = await pollJob(job.job_id, preparedText, voiceId);
+      if (cacheKey && finalJob?.audio_url) {
+        setSynthesisCache((prev) => ({
+          ...prev,
+          [cacheKey]: {
+            job_id: finalJob.job_id,
+            audio_url: finalJob.audio_url,
+            created_at: new Date().toISOString(),
+          },
+        }));
+      }
       setStatus(t("status.synthDone"));
       sendOsNotification("OratioViva", t("status.synthDone"));
       await refreshHistory();
@@ -1981,6 +2703,372 @@ export default function App() {
     setText("");
     setStatus(t("status.cleared"));
     setTimeout(() => setStatus(""), 2000);
+  }
+
+  function updateHistoryNote(jobId, note) {
+    setHistoryNotes((prev) => ({ ...prev, [jobId]: note }));
+  }
+
+  function toggleHistoryStar(jobId) {
+    setHistoryStars((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) {
+        next.delete(jobId);
+      } else {
+        next.add(jobId);
+      }
+      return next;
+    });
+  }
+
+  function buildProjectPayload(name, existing = null) {
+    const now = new Date().toISOString();
+    return {
+      id: existing?.id || `project-${Date.now()}`,
+      name: name || existing?.name || "Untitled Project",
+      text,
+      voiceId,
+      speed,
+      qualityMode,
+      toneId,
+      promptId,
+      style,
+      voicePrompt,
+      autoPunctuate,
+      voiceRef,
+      mode,
+      latexSpeakMode,
+      latexVerbosity,
+      latexLiteral,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+  }
+
+  function handleSaveProject(asNew = false) {
+    const existing = projects.find((project) => project.id === activeProjectId);
+    const payload = buildProjectPayload(projectNameInput, asNew ? null : existing);
+    setProjects((prev) => {
+      if (!asNew && existing) {
+        return prev.map((project) => (project.id === activeProjectId ? payload : project));
+      }
+      return [payload, ...prev.filter((project) => project.id !== payload.id)];
+    });
+    setActiveProjectId(payload.id);
+    setStatus(t("workspace.saved"));
+  }
+
+  function handleLoadProject(projectId) {
+    const project = projects.find((item) => item.id === projectId);
+    if (!project) return;
+    setText(project.text || "");
+    if (project.voiceId) setVoiceId(project.voiceId);
+    if (project.speed) setSpeed(project.speed);
+    if (project.qualityMode) setQualityMode(project.qualityMode);
+    if (project.toneId !== undefined) setToneId(project.toneId);
+    if (project.promptId !== undefined) setPromptId(project.promptId);
+    if (project.style !== undefined) setStyle(project.style);
+    if (project.voicePrompt !== undefined) setVoicePrompt(project.voicePrompt);
+    if (project.autoPunctuate !== undefined) setAutoPunctuate(project.autoPunctuate);
+    if (project.voiceRef !== undefined) setVoiceRef(project.voiceRef);
+    if (project.mode) setMode(project.mode);
+    if (project.latexSpeakMode) setLatexSpeakMode(project.latexSpeakMode);
+    if (project.latexVerbosity) setLatexVerbosity(project.latexVerbosity);
+    if (project.latexLiteral !== undefined) setLatexLiteral(project.latexLiteral);
+    setActiveProjectId(project.id);
+    setProjectNameInput(project.name || "");
+    setStatus(t("workspace.loaded"));
+  }
+
+  function handleDeleteProject(projectId) {
+    setProjects((prev) => prev.filter((project) => project.id !== projectId));
+    if (activeProjectId === projectId) {
+      setActiveProjectId("");
+    }
+    setStatus(t("workspace.deleted"));
+  }
+
+  function handleRenameProject() {
+    if (!activeProjectId) return;
+    setProjects((prev) =>
+      prev.map((project) =>
+        project.id === activeProjectId
+          ? { ...project, name: projectNameInput || project.name, updatedAt: new Date().toISOString() }
+          : project,
+      ),
+    );
+    setStatus(t("workspace.renamed"));
+  }
+
+  function applyTemplate(template) {
+    if (!template) return;
+    setText(template.text);
+    if (template.settings?.mode) setMode(template.settings.mode);
+    if (template.settings?.speed) setSpeed(template.settings.speed);
+    if (template.settings?.quality) setQualityMode(template.settings.quality);
+    setStatus(t("templates.applied"));
+  }
+
+  function openTemplatesPanel() {
+    setTemplateSeed({
+      text,
+      settings: {
+        mode,
+        speed,
+        quality: qualityMode,
+      },
+      stamp: Date.now(),
+    });
+    setShowTemplatesPanel(true);
+  }
+
+  function handleSaveTemplate(template) {
+    const now = new Date().toISOString();
+    setCustomTemplates((prev) => {
+      const existing = prev.find((item) => item.id === template.id);
+      const payload = {
+        ...template,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+      };
+      if (existing) {
+        return prev.map((item) => (item.id === template.id ? payload : item));
+      }
+      return [payload, ...prev];
+    });
+    setStatus(t("templates.saved"));
+  }
+
+  function handleDeleteTemplate(templateId) {
+    setCustomTemplates((prev) => prev.filter((item) => item.id !== templateId));
+    setStatus(t("templates.deleted"));
+  }
+
+  function togglePanel(key) {
+    setCollapsedPanels((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  }
+
+  function renderCompactToggle(key) {
+    if (!proMode) return null;
+    const isCollapsed = collapsedPanels[key];
+    return (
+      <button
+        type="button"
+        className="ghost small compact-toggle"
+        onClick={() => togglePanel(key)}
+      >
+        {isCollapsed ? t("layout.expand") : t("layout.collapse")}
+      </button>
+    );
+  }
+
+  function handleImportText(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (!name.endsWith(".txt") && !name.endsWith(".md") && !name.endsWith(".rtf")) {
+      setStatus(t("studyTools.importUnsupported"));
+      event.target.value = "";
+      return;
+    }
+    file
+      .text()
+      .then((contents) => {
+        setText(contents);
+        setStatus(t("studyTools.imported", { name: file.name }));
+      })
+      .catch(() => setStatus(t("studyTools.importError")))
+      .finally(() => {
+        event.target.value = "";
+      });
+  }
+
+  function handleCleanText() {
+    if (!text.trim()) return;
+    const cleaned = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .reduce((acc, line) => {
+        if (!line && acc[acc.length - 1] === "") return acc;
+        return [...acc, line];
+      }, [])
+      .join("\n");
+    setText(cleaned.trim());
+    setStatus(t("studyTools.cleaned"));
+  }
+
+  function handleInsertStudyPauses() {
+    if (!text.trim()) return;
+    const spaced = text.replace(/([.!?])\s+/g, "$1\n\n");
+    setText(spaced);
+    setStatus(t("studyTools.pausesAdded"));
+  }
+
+  function handleChunkText() {
+    if (!text.trim()) return;
+    const sentences = splitIntoSentences(text);
+    if (!sentences.length) return;
+    const size = Math.max(1, parseInt(studyChunkSize, 10) || 3);
+    const chunks = [];
+    for (let i = 0; i < sentences.length; i += size) {
+      chunks.push(sentences.slice(i, i + size).join(" "));
+    }
+    setText(chunks.join("\n\n"));
+    setStatus(t("studyTools.chunked", { count: chunks.length }));
+  }
+
+  function handleRepeatText() {
+    if (!text.trim()) return;
+    const count = Math.max(1, parseInt(studyRepeatCount, 10) || 1);
+    const selectionStart = textAreaRef.current?.selectionStart ?? 0;
+    const selectionEnd = textAreaRef.current?.selectionEnd ?? 0;
+    const hasSelection = selectionEnd > selectionStart;
+    const source = hasSelection ? text.slice(selectionStart, selectionEnd) : text;
+    const repeated = Array.from({ length: count }, () => source.trim()).join("\n\n");
+    if (hasSelection) {
+      const next = `${text.slice(0, selectionStart)}${repeated}${text.slice(selectionEnd)}`;
+      setText(next);
+    } else {
+      setText(repeated);
+    }
+    setStatus(t("studyTools.repeated", { count }));
+  }
+
+  function addPronunciationRule() {
+    setPronunciationMap((prev) => [...prev, { from: "", to: "" }]);
+  }
+
+  function updatePronunciationRule(index, field, value) {
+    setPronunciationMap((prev) =>
+      prev.map((entry, i) => (i === index ? { ...entry, [field]: value } : entry)),
+    );
+  }
+
+  function removePronunciationRule(index) {
+    setPronunciationMap((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function handleExportManifest(format) {
+    if (selectedHistory.size === 0) {
+      setStatus(t("export.selectItems"));
+      return;
+    }
+    exportManifest(Array.from(selectedHistory), format)
+      .then(({ url, filename }) => {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setStatus(t("export.exported"));
+      })
+      .catch((err) => setStatus(err.message || t("export.failed")));
+  }
+
+  function parseScriptToChainItems(sourceText) {
+    const lines = sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return lines.map((line, index) => {
+      const match = line.match(/^([^:]{1,40}):\s*(.+)$/);
+      if (match) {
+        return { text: match[2], voiceId: "", speaker: match[1], toneId: "", promptId: "" };
+      }
+      return { text: line, voiceId: "", speaker: "", toneId: "", promptId: "" };
+    });
+  }
+
+  function handleBuildChainFromEditor() {
+    if (!text.trim()) {
+      setStatus(t("chain.noScript"));
+      return;
+    }
+    const items = parseScriptToChainItems(text);
+    setChainItems(items.length ? items : [{ text: text, voiceId: "", speaker: "", toneId: "", promptId: "" }]);
+    setShowChainModal(true);
+  }
+
+  async function handleStartChain(items, options = {}) {
+    const filtered = items.filter((item) => item.text && item.text.trim());
+    if (!filtered.length) {
+      setStatus(t("chain.noItems"));
+      return;
+    }
+    const missing = filtered.find((item) => !areRequiredModelsAvailable(item.voiceId || voiceId));
+    if (missing) {
+      setStatus(t("status.modelMissing", { voice: missing.voiceId || voiceId }));
+      setShowModelsPanel(true);
+      return;
+    }
+
+    const payloadItems = filtered.map((item) => {
+      const textWithPronunciation = applyPronunciationMap(item.text, pronunciationMap);
+      return {
+        text: textWithPronunciation,
+        voice_id: item.voiceId || voiceId,
+        speed,
+        quality: qualityMode,
+        tone_id: toneId || undefined,
+        prompt_id: promptId || undefined,
+        voice_prompt: voicePrompt || undefined,
+        auto_punctuate: autoPunctuate,
+        style: style || undefined,
+        voice_ref: voiceRef || undefined,
+        mode,
+        latex_speak_mode: latexSpeakMode,
+        latex_verbosity: latexVerbosity,
+        latex_literal: latexLiteral,
+      };
+    });
+
+    try {
+      setChainProgress({ current: 0, total: payloadItems.length, status: "queued", chainId: null });
+      const res = await createChain(payloadItems, options.parallel);
+      setShowChainModal(false);
+      setChainProgress({
+        current: 0,
+        total: payloadItems.length,
+        status: "running",
+        chainId: res.chain_id,
+      });
+      showToast(t("chain.startChain"), "info");
+      await pollChainStatus(res.chain_id, payloadItems.length);
+    } catch (err) {
+      setChainProgress({ current: 0, total: payloadItems.length, status: "failed", chainId: null });
+      setStatus(t("chain.failed", { error: err.message }));
+    }
+  }
+
+  async function pollChainStatus(chainId, total) {
+    let attempts = 0;
+    const maxAttempts = 240;
+    while (attempts < maxAttempts) {
+      try {
+        const res = await fetchChainStatus(chainId);
+        const completed = res.succeeded + res.failed;
+        setChainProgress({
+          current: completed,
+          total: res.total || total,
+          status: res.completed ? "completed" : "running",
+          chainId,
+        });
+        if (res.completed) {
+          showToast(t("notifications.chainComplete", { count: res.total || total }), "success");
+          await refreshHistory();
+          await refreshJobs();
+          return;
+        }
+      } catch (err) {
+        setChainProgress({ current: 0, total, status: "failed", chainId: null });
+        setStatus(t("chain.failed", { error: err.message }));
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+      attempts++;
+    }
+    setChainProgress({ current: 0, total, status: "failed", chainId: null });
   }
 
   async function handleDeleteHistory(jobId) {
@@ -2140,6 +3228,35 @@ export default function App() {
     [modelState.models],
   );
 
+  const allTemplates = useMemo(
+    () => [...customTemplates, ...QUICKSTART_TEMPLATES],
+    [customTemplates],
+  );
+
+  const filteredTemplates = useMemo(() => {
+    if (templateFilter === "all") return allTemplates;
+    return allTemplates.filter((template) => template.category === templateFilter);
+  }, [allTemplates, templateFilter]);
+
+  const filteredHistory = useMemo(() => {
+    const query = historyQuery.trim().toLowerCase();
+    return (history || []).filter((item) => {
+      if (historyStarOnly && !historyStars.has(item.job_id)) return false;
+      if (!query) return true;
+      const haystack = `${item.text_preview || ""} ${item.voice_id || ""} ${item.model || ""}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [history, historyQuery, historyStars, historyStarOnly]);
+
+  const filteredJobs = useMemo(() => {
+    const query = jobsQuery.trim().toLowerCase();
+    return (jobs || []).filter((job) => {
+      if (!query) return true;
+      const haystack = `${job.text_preview || ""} ${job.voice_id || ""} ${job.model || ""} ${job.job_id || ""}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [jobs, jobsQuery]);
+
   const needsLongAudio = text.length > LONG_TEXT_THRESHOLD;
 
   if (i18nLoading) {
@@ -2160,7 +3277,7 @@ export default function App() {
   }
 
   return (
-    <div className="page">
+    <div className={`page ${proMode ? "pro-mode" : ""}`}>
       {showModelsPanel && (
         <ModelDownloadPanel
           models={modelState.models}
@@ -2186,6 +3303,8 @@ export default function App() {
           onChangePerfProfile={setPerfProfile}
           readingSpeed={readingSpeed}
           onChangeReadingSpeed={setReadingSpeed}
+          proMode={proMode}
+          onChangeProMode={setProMode}
           hfTokenStatus={hfTokenStatus}
           hfTokenInput={hfTokenInput}
           onChangeHfTokenInput={setHfTokenInput}
@@ -2224,10 +3343,27 @@ export default function App() {
         />
       )}
 
+      {showTemplatesPanel && (
+        <TemplatesPanel
+          t={t}
+          templates={customTemplates}
+          seed={templateSeed}
+          onClose={() => setShowTemplatesPanel(false)}
+          onSave={handleSaveTemplate}
+          onDelete={handleDeleteTemplate}
+          onApply={(template) => applyTemplate(template)}
+        />
+      )}
+
       {showFirstRunGuide && (
         <FirstRunGuide
           t={t}
-          onClose={() => setShowFirstRunGuide(false)}
+          onClose={closeFirstRunGuide}
+          onStartTour={() => {
+            closeFirstRunGuide();
+            setShowGuidedTour(true);
+            setTourStep(0);
+          }}
         />
       )}
 
@@ -2268,13 +3404,10 @@ export default function App() {
         <ChainModal
           t={t}
           onClose={() => setShowChainModal(false)}
-          onStart={(items) => {
-            setShowChainModal(false);
-            showToast(t("chain.startChain"), "info");
-          }}
-          presets={presets}
+          onStart={handleStartChain}
           voices={voices}
           currentVoice={currentVoice}
+          initialItems={chainItems}
         />
       )}
 
@@ -2374,6 +3507,154 @@ export default function App() {
       <main className="grid">
         <section className="card">
           <form onSubmit={handleSubmit} className="form">
+            <div
+              className={`workspace-panel compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.workspace ? "collapsed" : ""}`}
+            >
+              <div className="row space">
+                <div>
+                  <p className="eyebrow">{t("workspace.title")}</p>
+                  <h3>{t("workspace.projectTitle")}</h3>
+                </div>
+                <div className="row">
+                  {renderCompactToggle("workspace")}
+                </div>
+              </div>
+              <div className="compact-body">
+                <div className="row">
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => {
+                      setActiveProjectId("");
+                      setProjectNameInput("");
+                      setStatus(t("workspace.cleared"));
+                    }}
+                  >
+                    {t("workspace.new")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => handleSaveProject(true)}>
+                    {t("workspace.saveAs")}
+                  </button>
+                </div>
+                <div className="row">
+                  <select
+                    className="input small"
+                    value={activeProjectId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      if (!nextId) {
+                        setActiveProjectId("");
+                        return;
+                      }
+                      handleLoadProject(nextId);
+                    }}
+                  >
+                    <option value="">{t("workspace.selectProject")}</option>
+                    {projects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => activeProjectId && handleLoadProject(activeProjectId)}
+                    disabled={!activeProjectId}
+                  >
+                    {t("workspace.load")}
+                  </button>
+                </div>
+                <div className="row">
+                  <input
+                    className="input small"
+                    placeholder={t("workspace.projectNamePlaceholder")}
+                    value={projectNameInput}
+                    onChange={(e) => setProjectNameInput(e.target.value)}
+                  />
+                  <button type="button" className="button button-small" onClick={() => handleSaveProject(false)}>
+                    {t("workspace.save")}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={handleRenameProject}
+                    disabled={!activeProjectId}
+                  >
+                    {t("workspace.rename")}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost small"
+                    onClick={() => handleDeleteProject(activeProjectId)}
+                    disabled={!activeProjectId}
+                  >
+                    {t("workspace.delete")}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div
+              className={`quickstart-panel compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.quickstart ? "collapsed" : ""}`}
+            >
+              <div className="row space">
+                <div>
+                  <p className="eyebrow">{t("templates.title")}</p>
+                  <h3>{t("templates.subtitle")}</h3>
+                </div>
+                <div className="row">
+                  {renderCompactToggle("quickstart")}
+                </div>
+              </div>
+              <div className="compact-body">
+                <div className="row space" style={{ marginBottom: "12px" }}>
+                  <div className="segmented">
+                    <button
+                      type="button"
+                      className={`segmented-btn ${templateFilter === "all" ? "active" : ""}`}
+                      onClick={() => setTemplateFilter("all")}
+                    >
+                      {t("templates.filterAll")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`segmented-btn ${templateFilter === "student" ? "active" : ""}`}
+                      onClick={() => setTemplateFilter("student")}
+                    >
+                      {t("templates.filterStudent")}
+                    </button>
+                    <button
+                      type="button"
+                      className={`segmented-btn ${templateFilter === "pro" ? "active" : ""}`}
+                      onClick={() => setTemplateFilter("pro")}
+                    >
+                      {t("templates.filterPro")}
+                    </button>
+                  </div>
+                  <button type="button" className="ghost small" onClick={openTemplatesPanel}>
+                    {t("templates.manage")}
+                  </button>
+                </div>
+                <div className="quickstart-grid">
+                  {filteredTemplates.map((template) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      className="quickstart-card"
+                      onClick={() => applyTemplate(template)}
+                    >
+                      <div className="quickstart-head">
+                        <span className="tag subtle">{t(`templates.category.${template.category}`)}</span>
+                        <span className="quickstart-title">{template.title}</span>
+                      </div>
+                      <p className="muted small">{template.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
             <div className="label-row">
               <label className="label">{t("form.textLabel")}</label>
               <div className="text-actions">
@@ -2383,6 +3664,9 @@ export default function App() {
                 <button type="button" className="ghost small" onClick={clearText} title={t("form.clearText")}>
                   {t("form.clearText")}
                 </button>
+                <button type="button" className="ghost small" onClick={handleBuildChainFromEditor}>
+                  {t("chain.buildFromScript")}
+                </button>
                 <span className="char-count">{text.length} {t("form.charCount")}</span>
               </div>
             </div>
@@ -2391,8 +3675,105 @@ export default function App() {
               rows={8}
               placeholder={t("form.placeholder")}
               value={text}
+              ref={textAreaRef}
               onChange={(e) => setText(e.target.value)}
             />
+
+            <div
+              className={`study-tools-panel compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.studyTools ? "collapsed" : ""}`}
+            >
+              <div className="row space">
+                <div>
+                  <p className="eyebrow">{t("studyTools.title")}</p>
+                  <h3>{t("studyTools.subtitle")}</h3>
+                </div>
+                <div className="row">
+                  {renderCompactToggle("studyTools")}
+                </div>
+              </div>
+              <div className="compact-body">
+                <div className="study-tools-grid">
+                  <label className="file-upload">
+                    <input type="file" accept=".txt,.md,.rtf" onChange={handleImportText} />
+                    <span className="ghost small">{t("studyTools.import")}</span>
+                  </label>
+                  <button type="button" className="ghost small" onClick={handleCleanText}>
+                    {t("studyTools.clean")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={handleInsertStudyPauses}>
+                    {t("studyTools.addPauses")}
+                  </button>
+                  <div className="study-inline">
+                    <label className="muted small">{t("studyTools.chunkLabel")}</label>
+                    <div className="row">
+                      <input
+                        className="input small"
+                        type="number"
+                        min="1"
+                        value={studyChunkSize}
+                        onChange={(e) => setStudyChunkSize(e.target.value)}
+                      />
+                      <button type="button" className="ghost small" onClick={handleChunkText}>
+                        {t("studyTools.chunk")}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="study-inline">
+                    <label className="muted small">{t("studyTools.repeatLabel")}</label>
+                    <div className="row">
+                      <input
+                        className="input small"
+                        type="number"
+                        min="1"
+                        value={studyRepeatCount}
+                        onChange={(e) => setStudyRepeatCount(e.target.value)}
+                      />
+                      <button type="button" className="ghost small" onClick={handleRepeatText}>
+                        {t("studyTools.repeat")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pronunciation-panel">
+                  <div className="row space">
+                    <div>
+                      <h4>{t("studyTools.pronunciationTitle")}</h4>
+                      <p className="muted small">{t("studyTools.pronunciationHint")}</p>
+                    </div>
+                    <button type="button" className="ghost small" onClick={addPronunciationRule}>
+                      {t("studyTools.addRule")}
+                    </button>
+                  </div>
+                  {pronunciationMap.length === 0 && (
+                    <p className="muted small">{t("studyTools.noRules")}</p>
+                  )}
+                  {pronunciationMap.map((entry, index) => (
+                    <div key={`pronunciation-${index}`} className="pronunciation-row">
+                      <input
+                        className="input small"
+                        placeholder={t("studyTools.pronunciationFrom")}
+                        value={entry.from}
+                        onChange={(e) => updatePronunciationRule(index, "from", e.target.value)}
+                      />
+                      <input
+                        className="input small"
+                        placeholder={t("studyTools.pronunciationTo")}
+                        value={entry.to}
+                        onChange={(e) => updatePronunciationRule(index, "to", e.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className="ghost small"
+                        onClick={() => removePronunciationRule(index)}
+                      >
+                        {t("studyTools.removeRule")}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
 
             <div className="estimator-panel" aria-live="polite">
               <div>
@@ -2598,6 +3979,71 @@ export default function App() {
             </div>
 
             <div className="field">
+              <label className="label">{t("form.modeLabel")}</label>
+              <div className="segmented">
+                <button
+                  type="button"
+                  className={`segmented-btn ${mode === "default" ? "active" : ""}`}
+                  onClick={() => setMode("default")}
+                >
+                  {t("form.modeDefault")}
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-btn ${mode === "study" ? "active" : ""}`}
+                  onClick={() => setMode("study")}
+                >
+                  {t("form.modeStudy")}
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-btn ${mode === "article" ? "active" : ""}`}
+                  onClick={() => setMode("article")}
+                >
+                  {t("form.modeArticle")}
+                </button>
+              </div>
+              <p className="muted">{t("form.modeHint")}</p>
+            </div>
+
+            <div className="field">
+              <label className="label">{t("form.latexLabel")}</label>
+              <div className="row gap" style={{ flexWrap: "wrap" }}>
+                <div style={{ flex: "1", minWidth: "120px" }}>
+                  <label className="muted small" style={{ marginBottom: "0.25rem", display: "block" }}>{t("form.latexSpeakModeLabel")}</label>
+                  <select
+                    className="input small"
+                    value={latexSpeakMode}
+                    onChange={(e) => setLatexSpeakMode(e.target.value)}
+                  >
+                    <option value="math">{t("form.latexSpeakModeMath")}</option>
+                    <option value="literal">{t("form.latexSpeakModeLiteral")}</option>
+                  </select>
+                </div>
+                <div style={{ flex: "1", minWidth: "120px" }}>
+                  <label className="muted small" style={{ marginBottom: "0.25rem", display: "block" }}>{t("form.latexVerbosityLabel")}</label>
+                  <select
+                    className="input small"
+                    value={latexVerbosity}
+                    onChange={(e) => setLatexVerbosity(e.target.value)}
+                  >
+                    <option value="short">{t("form.latexVerbosityShort")}</option>
+                    <option value="detailed">{t("form.latexVerbosityDetailed")}</option>
+                  </select>
+                </div>
+              </div>
+              <label className="checkbox-row" style={{ marginTop: "0.5rem" }}>
+                <input
+                  type="checkbox"
+                  checked={latexLiteral}
+                  onChange={(e) => setLatexLiteral(e.target.checked)}
+                />
+                <span>{t("form.latexLiteralLabel")}</span>
+              </label>
+              <p className="muted small">{t("form.latexLiteralHint")}</p>
+            </div>
+
+            <div className="field">
               <div className="row space" style={{ marginBottom: "0.5rem" }}>
                 <label className="label" style={{ marginBottom: 0 }}>{t("form.toneLabel")}</label>
                 <button
@@ -2713,6 +4159,14 @@ export default function App() {
               >
                 {loading ? t("form.synthesizing") : t("form.generateBtn")}
               </button>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={openTemplatesPanel}
+                disabled={!text.trim()}
+              >
+                {t("templates.saveCurrent")}
+              </button>
               {needsLongAudio && !loading && (
                 <button
                   type="button"
@@ -2727,21 +4181,43 @@ export default function App() {
           </form>
         </section>
 
-        <section className="card history">
+        <section className={`card history compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.history ? "collapsed" : ""}`}>
           <div className="history-header">
             <div>
               <p className="eyebrow">{t("history.title")}</p>
               <h2>{t("history.recentGens")}</h2>
             </div>
             <div className="row">
-              <button className="ghost" onClick={refreshHistory}>{t("history.refresh")}</button>
-              <button className="ghost" onClick={handleExportSelected}>{t("history.exportZip")}</button>
-              <button className="ghost" onClick={handleExportMp3}>{t("export.exportMp3")}</button>
-              <button className="ghost" onClick={handleDeleteSelectedHistory}>{t("history.deleteSelected")}</button>
+              {renderCompactToggle("history")}
             </div>
           </div>
-          <div className="history-list">
-            {(history || []).map((item) => (
+          <div className="compact-body">
+            <div className="history-actions">
+              <div className="row">
+                <input
+                  className="input small"
+                  placeholder={t("history.searchPlaceholder")}
+                  value={historyQuery}
+                  onChange={(e) => setHistoryQuery(e.target.value)}
+                />
+                <button
+                  className={`ghost small ${historyStarOnly ? "active" : ""}`}
+                  onClick={() => setHistoryStarOnly((prev) => !prev)}
+                >
+                  {t("history.starredOnly")}
+                </button>
+              </div>
+              <div className="row">
+                <button className="ghost" onClick={refreshHistory}>{t("history.refresh")}</button>
+                <button className="ghost" onClick={handleExportSelected}>{t("history.exportZip")}</button>
+                <button className="ghost" onClick={() => handleExportManifest("csv")}>{t("export.exportCsv")}</button>
+                <button className="ghost" onClick={() => handleExportManifest("json")}>{t("export.exportJson")}</button>
+                <button className="ghost" onClick={handleExportMp3}>{t("export.exportMp3")}</button>
+                <button className="ghost" onClick={handleDeleteSelectedHistory}>{t("history.deleteSelected")}</button>
+              </div>
+            </div>
+            <div className="history-list">
+              {(filteredHistory || []).map((item) => (
               <article key={item.job_id} className="history-item">
                 <div className="row space">
                   <div className="row">
@@ -2750,6 +4226,13 @@ export default function App() {
                       checked={selectedHistory.has(item.job_id)}
                       onChange={() => toggleSelection(item.job_id)}
                     />
+                    <button
+                      type="button"
+                      className={`ghost small bookmark-btn ${historyStars.has(item.job_id) ? "active" : ""}`}
+                      onClick={() => toggleHistoryStar(item.job_id)}
+                    >
+                      {historyStars.has(item.job_id) ? t("history.unstar") : t("history.star")}
+                    </button>
                     <span className="tag">{item.model?.split("/").pop()}</span>
                     <span className="tag">{item.voice_id}</span>
                   </div>
@@ -2758,6 +4241,14 @@ export default function App() {
                   </button>
                 </div>
                 <p className="preview">{item.text_preview}</p>
+                <div className="history-note">
+                  <input
+                    className="input small"
+                    placeholder={t("history.notePlaceholder")}
+                    value={historyNotes[item.job_id] || ""}
+                    onChange={(e) => updateHistoryNote(item.job_id, e.target.value)}
+                  />
+                </div>
                 <div className="row space">
                   <small>{t("history.createdAt")}: {new Date(item.created_at).toLocaleString()}</small>
                   {item.audio_url ? (
@@ -2773,12 +4264,17 @@ export default function App() {
                 </div>
               </article>
             ))}
-            {history.length === 0 && <p className="muted">{t("history.noItems")}</p>}
+            {filteredHistory.length === 0 && (
+              <p className="muted">
+                {historyQuery || historyStarOnly ? t("history.noMatches") : t("history.noItems")}
+              </p>
+            )}
+            </div>
           </div>
         </section>
       </main>
 
-      <section className="card jobs">
+      <section className={`card jobs compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.jobs ? "collapsed" : ""}`}>
         <div className="history-header">
           <div>
             <p className="eyebrow">{t("jobs.title")}</p>
@@ -2786,12 +4282,30 @@ export default function App() {
           </div>
           <div className="row">
             <span className="jobs-count">{jobs.length} job{jobs.length !== 1 ? "s" : ""}</span>
+            {chainProgress.status === "running" && (
+              <span className="jobs-count">
+                {t("chain.progress", { current: chainProgress.current, total: chainProgress.total })}
+              </span>
+            )}
+            {chainProgress.status === "completed" && (
+              <span className="jobs-count">{t("chain.completed")}</span>
+            )}
+            {renderCompactToggle("jobs")}
+          </div>
+        </div>
+        <div className="compact-body">
+          <div className="row" style={{ marginBottom: "12px" }}>
+            <input
+              className="input small"
+              placeholder={t("jobs.searchPlaceholder")}
+              value={jobsQuery}
+              onChange={(e) => setJobsQuery(e.target.value)}
+            />
             <button className="ghost" onClick={refreshJobs}>{t("jobs.refresh")}</button>
             <button className="ghost" onClick={handleDeleteSelectedJobs}>{t("jobs.deleteSelected")}</button>
           </div>
-        </div>
-        <div className="history-list">
-          {(jobs || []).map((job) => {
+          <div className="history-list">
+            {(filteredJobs || []).map((job) => {
             const statusInfo = getJobStatusInfo(job.status);
             const isActive = job.status?.toLowerCase() === "pending" || job.status?.toLowerCase() === "processing" || job.status?.toLowerCase() === "running";
             return (
@@ -2828,65 +4342,75 @@ export default function App() {
               </article>
             );
           })}
-          {jobs.length === 0 && <p className="muted">{t("jobs.noJobs")}</p>}
+          {filteredJobs.length === 0 && (
+            <p className="muted">
+              {jobsQuery ? t("jobs.noMatches") : t("jobs.noJobs")}
+            </p>
+          )}
+          </div>
         </div>
       </section>
 
-      <section className="card analytics">
+      <section className={`card analytics compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.analytics ? "collapsed" : ""}`}>
         <div className="history-header">
           <div>
             <p className="eyebrow">{t("analytics.title")}</p>
             <h2>{t("analytics.metrics")}</h2>
           </div>
           <div className="row">
-            <button className="ghost" onClick={refreshAnalytics}>{t("analytics.refresh")}</button>
+            {renderCompactToggle("analytics")}
           </div>
         </div>
-        {!analytics ? (
-          <p className="muted">{t("analytics.loading")}</p>
-        ) : (
-          <div className="analytics-grid">
-            <div className="analytics-card">
-              <h4>{t("analytics.runtime")}</h4>
-              <p>{analytics.provider}</p>
-              {analytics.provider_message && (
-                <small className="muted">{analytics.provider_message}</small>
-              )}
-            </div>
-            <div className="analytics-card">
-              <h4>{t("analytics.activity")}</h4>
-              <p>
-                {t("analytics.historyItems")}: {analytics.counts?.history || 0}
-              </p>
-              <p>
-                {t("analytics.jobsStored")}: {analytics.counts?.jobs || 0}
-              </p>
-              <p>
-                {t("analytics.audioDuration")}: {formatDuration(analytics.counts?.audio_duration_seconds || 0)}
-              </p>
-            </div>
-            <div className="analytics-card">
-              <h4>{t("analytics.estimator")}</h4>
-              <p>
-                {t("analytics.estimatedAudio")}: {formatDuration(estimatedAudioSeconds)}
-              </p>
-              <p>
-                {t("analytics.estimatedGeneration")}: {formatDuration(estimatedGenLow)} – {formatDuration(estimatedGenHigh)}
-              </p>
-              <p>
-                {t("analytics.estimationProfile")}: {PERF_PROFILES[perfProfile]?.label || perfProfile}
-              </p>
-              <p>
-                {t("analytics.readingSpeed", { wpm: readingSpeed })}
-              </p>
-              {(analyticsModelRtf || analyticsAvgRtf) && (
-                <p>
-                  {t("analytics.avgRealtime")}: {(analyticsModelRtf || analyticsAvgRtf).toFixed(2)}x
-                </p>
-              )}
-            </div>
+        <div className="compact-body">
+          <div className="row" style={{ marginBottom: "12px" }}>
+            <button className="ghost" onClick={refreshAnalytics}>{t("analytics.refresh")}</button>
           </div>
-        )}
+          {!analytics ? (
+            <p className="muted">{t("analytics.loading")}</p>
+          ) : (
+            <div className="analytics-grid">
+              <div className="analytics-card">
+                <h4>{t("analytics.runtime")}</h4>
+                <p>{analytics.provider}</p>
+                {analytics.provider_message && (
+                  <small className="muted">{analytics.provider_message}</small>
+                )}
+              </div>
+              <div className="analytics-card">
+                <h4>{t("analytics.activity")}</h4>
+                <p>
+                  {t("analytics.historyItems")}: {analytics.counts?.history || 0}
+                </p>
+                <p>
+                  {t("analytics.jobsStored")}: {analytics.counts?.jobs || 0}
+                </p>
+                <p>
+                  {t("analytics.audioDuration")}: {formatDuration(analytics.counts?.audio_duration_seconds || 0)}
+                </p>
+              </div>
+              <div className="analytics-card">
+                <h4>{t("analytics.estimator")}</h4>
+                <p>
+                  {t("analytics.estimatedAudio")}: {formatDuration(estimatedAudioSeconds)}
+                </p>
+                <p>
+                  {t("analytics.estimatedGeneration")}: {formatDuration(estimatedGenLow)} – {formatDuration(estimatedGenHigh)}
+                </p>
+                <p>
+                  {t("analytics.estimationProfile")}: {PERF_PROFILES[perfProfile]?.label || perfProfile}
+                </p>
+                <p>
+                  {t("analytics.readingSpeed", { wpm: readingSpeed })}
+                </p>
+                {(analyticsModelRtf || analyticsAvgRtf) && (
+                  <p>
+                    {t("analytics.avgRealtime")}: {(analyticsModelRtf || analyticsAvgRtf).toFixed(2)}x
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );

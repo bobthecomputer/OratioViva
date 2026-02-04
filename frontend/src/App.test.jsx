@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import { I18nProvider } from "./i18n";
 
@@ -101,7 +101,8 @@ describe("App selection and export", () => {
       expect(screen.getByText(/Hello world/)).toBeInTheDocument();
     });
 
-    const checkbox = screen.getAllByRole("checkbox")[0];
+    const historyItem = screen.getByText(/Hello world/).closest(".history-item");
+    const checkbox = within(historyItem).getByRole("checkbox");
     fireEvent.click(checkbox);
 
     const exportBtn = screen.getByText(/Export ZIP/);
@@ -115,9 +116,9 @@ describe("App selection and export", () => {
   it("allows batch delete of jobs", async () => {
     renderWithProviders(<App />);
     await waitFor(() => screen.getByText(/File d'attente/));
-    const checkboxes = screen.getAllByRole("checkbox");
-    const checkbox = checkboxes[checkboxes.length - 1]; // take one from jobs list
-    fireEvent.click(checkbox);
+    const jobsSection = screen.getByText(/File d'attente/).closest(".jobs");
+    const jobCheckbox = within(jobsSection).getAllByRole("checkbox")[0];
+    fireEvent.click(jobCheckbox);
     const deleteButtons = screen.getAllByText(/Supprimer s(é|e)lection/);
     const jobsDeleteBtn = deleteButtons[deleteButtons.length - 1];
     fireEvent.click(jobsDeleteBtn);
