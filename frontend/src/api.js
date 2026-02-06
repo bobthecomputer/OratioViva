@@ -276,6 +276,70 @@ export async function fetchDiagnostics() {
   return jsonFetch("/diagnostics");
 }
 
+export async function fetchOcrPrompts() {
+  return jsonFetch("/ocr/prompts");
+}
+
+export async function runGlmOcr(file, options = {}) {
+  const base = await resolveApiBase();
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("task", options.task || "text");
+  formData.append("max_new_tokens", String(options.maxNewTokens || 2048));
+  formData.append("max_pages", String(options.maxPages || 12));
+  if (options.prompt) formData.append("prompt", options.prompt);
+  if (options.model) formData.append("model", options.model);
+
+  const resp = await fetch(`${base}/ocr/glm`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!resp.ok) {
+    let detail = "OCR request failed";
+    try {
+      const payload = await resp.json();
+      detail = payload?.detail || payload?.error || detail;
+    } catch {
+      detail = await resp.text();
+    }
+    throw new Error(detail || `OCR request failed (${resp.status})`);
+  }
+  return resp.json();
+}
+
+export async function startGlmOcrJob(file, options = {}) {
+  const base = await resolveApiBase();
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("task", options.task || "text");
+  formData.append("max_new_tokens", String(options.maxNewTokens || 2048));
+  formData.append("max_pages", String(options.maxPages || 12));
+  if (options.prompt) formData.append("prompt", options.prompt);
+  if (options.model) formData.append("model", options.model);
+
+  const resp = await fetch(`${base}/ocr/glm/start`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!resp.ok) {
+    let detail = "OCR job start failed";
+    try {
+      const payload = await resp.json();
+      detail = payload?.detail || payload?.error || detail;
+    } catch {
+      detail = await resp.text();
+    }
+    throw new Error(detail || `OCR job start failed (${resp.status})`);
+  }
+  return resp.json();
+}
+
+export async function fetchOcrJob(jobId) {
+  return jsonFetch(`/ocr/jobs/${encodeURIComponent(jobId)}`);
+}
+
 export async function runCleanup(options) {
   return jsonFetch("/maintenance/cleanup", {
     method: "POST",

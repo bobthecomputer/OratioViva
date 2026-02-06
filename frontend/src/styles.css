@@ -1818,7 +1818,8 @@ h3 {
 
 .workspace-panel,
 .quickstart-panel,
-.study-tools-panel {
+.study-tools-panel,
+.ocr-panel {
   padding: 16px;
   border-radius: 16px;
   border: 1px solid var(--border);
@@ -1840,7 +1841,8 @@ h3 {
 
 .workspace-panel .row,
 .quickstart-panel .row,
-.study-tools-panel .row {
+.study-tools-panel .row,
+.ocr-panel .row {
   gap: 12px;
 }
 
@@ -1885,6 +1887,29 @@ h3 {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 12px;
   margin-top: 12px;
+}
+
+.ocr-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.ocr-result-block {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ocr-result-block h4 {
+  margin: 0;
+}
+
+.ocr-progress-wrap {
+  margin-top: 10px;
 }
 
 .study-inline {

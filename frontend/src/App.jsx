@@ -44,7 +44,10 @@ import {
   deletePromptPreset,
   fetchModelCapabilities,
   fetchDiagnostics,
+  fetchOcrJob,
+  fetchOcrPrompts,
   runCleanup,
+  startGlmOcrJob,
   getTelemetrySettings,
   setTelemetrySettings,
 } from "./api";
@@ -1846,12 +1849,32 @@ export default function App() {
     workspace: false,
     quickstart: false,
     studyTools: false,
+    ocr: false,
     history: false,
     jobs: false,
     analytics: false,
   });
   const [studyChunkSize, setStudyChunkSize] = useState(3);
   const [studyRepeatCount, setStudyRepeatCount] = useState(2);
+  const [ocrConfig, setOcrConfig] = useState({
+    tasks: { text: "Text Recognition:", formula: "Formula Recognition:", table: "Table Recognition:" },
+    supported_extensions: [".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tiff", ".tif", ".pdf"],
+    max_upload_bytes: 20 * 1024 * 1024,
+    max_pages: 12,
+    default_model: "zai-org/GLM-OCR",
+  });
+  const [ocrTask, setOcrTask] = useState("text");
+  const [ocrPrompt, setOcrPrompt] = useState("");
+  const [ocrModel, setOcrModel] = useState("");
+  const [ocrMaxNewTokens, setOcrMaxNewTokens] = useState(2048);
+  const [ocrMaxPages, setOcrMaxPages] = useState(8);
+  const [ocrFile, setOcrFile] = useState(null);
+  const [ocrResult, setOcrResult] = useState("");
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrError, setOcrError] = useState("");
+  const [ocrInfo, setOcrInfo] = useState("");
+  const [ocrMeta, setOcrMeta] = useState(null);
   const [synthesisCache, setSynthesisCache] = useState(() => loadJson(STORAGE_KEYS.synthesisCache, {}));
   const textAreaRef = useRef(null);
 
@@ -1999,6 +2022,7 @@ export default function App() {
         workspace: true,
         quickstart: true,
         studyTools: true,
+        ocr: true,
         history: true,
         jobs: true,
         analytics: true,
@@ -2008,6 +2032,7 @@ export default function App() {
         workspace: false,
         quickstart: false,
         studyTools: false,
+        ocr: false,
         history: false,
         jobs: false,
         analytics: false,
@@ -2251,9 +2276,28 @@ export default function App() {
     } catch { /* noop */ }
   }
 
+  async function refreshOcrPrompts() {
+    try {
+      const res = await fetchOcrPrompts();
+      if (res) {
+        setOcrConfig((prev) => ({ ...prev, ...res }));
+        if (res.max_pages) {
+          setOcrMaxPages((prev) => {
+            const parsed = Number(prev);
+            if (!Number.isFinite(parsed) || parsed < 1) return res.max_pages;
+            return Math.min(parsed, res.max_pages);
+          });
+        }
+      }
+    } catch {
+      // noop
+    }
+  }
+
   useEffect(() => {
     if (backendReady) {
       refreshPresets();
+      refreshOcrPrompts();
     }
   }, [backendReady]);
 
@@ -2937,6 +2981,117 @@ export default function App() {
     setStatus(t("studyTools.repeated", { count }));
   }
 
+  function handleOcrFileChange(event) {
+    const selected = event.target.files?.[0] || null;
+    setOcrFile(selected);
+    setOcrError("");
+    if (selected) {
+      setOcrInfo(t("ocr.fileSelected", { name: selected.name }));
+    } else {
+      setOcrInfo("");
+    }
+  }
+
+  async function handleRunOcr() {
+    if (!ocrFile) {
+      setOcrError(t("ocr.selectFileFirst"));
+      return;
+    }
+
+    setOcrBusy(true);
+    setOcrError("");
+    setOcrInfo("");
+    setOcrProgress(0);
+
+    try {
+      const started = await startGlmOcrJob(ocrFile, {
+        task: ocrTask,
+        prompt: ocrPrompt.trim() || undefined,
+        model: ocrModel.trim() || undefined,
+        maxNewTokens: Number(ocrMaxNewTokens) || 2048,
+        maxPages: Number(ocrMaxPages) || ocrConfig.max_pages || 12,
+      });
+      const jobId = started?.job_id;
+      if (!jobId) {
+        throw new Error(t("ocr.failed"));
+      }
+
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      let finalResult = null;
+      for (let attempt = 0; attempt < 900; attempt++) {
+        const snapshot = await fetchOcrJob(jobId);
+        const percent = Number(snapshot.progress || 0);
+        setOcrProgress(Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0);
+
+        if (snapshot.message) {
+          if (snapshot.current_page && snapshot.total_pages) {
+            setOcrInfo(
+              `${snapshot.message} (${snapshot.current_page}/${snapshot.total_pages})`,
+            );
+          } else {
+            setOcrInfo(snapshot.message);
+          }
+        }
+
+        if (snapshot.status === "succeeded") {
+          finalResult = snapshot;
+          break;
+        }
+        if (snapshot.status === "failed") {
+          throw new Error(snapshot.error || t("ocr.failed"));
+        }
+        await sleep(700);
+      }
+
+      if (!finalResult) {
+        throw new Error(t("ocr.timeout"));
+      }
+
+      setOcrProgress(100);
+      const finalText = finalResult.result_text || "";
+      setOcrResult(finalText);
+      setOcrMeta(finalResult);
+      setOcrInfo(
+        t("ocr.success", {
+          seconds: Number(finalResult.elapsed_seconds || 0).toFixed(2),
+        }),
+      );
+    } catch (err) {
+      setOcrError(err.message || t("ocr.failed"));
+    } finally {
+      setOcrBusy(false);
+    }
+  }
+
+  function handleUseOcrText(mode = "append") {
+    if (!ocrResult.trim()) return;
+    if (mode === "replace" || !text.trim()) {
+      setText(ocrResult);
+    } else {
+      setText((prev) => `${prev.trim()}\n\n${ocrResult}`.trim());
+    }
+    setStatus(t("ocr.insertedIntoEditor"));
+  }
+
+  function handleDownloadOcrText(format = "txt") {
+    if (!ocrResult.trim()) return;
+    const sourceName = (ocrFile?.name || ocrMeta?.filename || "ocr-result")
+      .replace(/\.[^.]+$/, "")
+      .trim();
+    const safeBase = sourceName || "ocr-result";
+    const extension = format === "md" ? "md" : "txt";
+    const mime = extension === "md" ? "text/markdown" : "text/plain";
+    const blob = new Blob([ocrResult], { type: `${mime};charset=utf-8` });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${safeBase}.${extension}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
   function addPronunciationRule() {
     setPronunciationMap((prev) => [...prev, { from: "", to: "" }]);
   }
@@ -3256,6 +3411,17 @@ export default function App() {
       return haystack.includes(query);
     });
   }, [jobs, jobsQuery]);
+
+  const ocrAcceptedTypes = useMemo(() => {
+    const extensions = ocrConfig?.supported_extensions || [];
+    return extensions.length ? extensions.join(",") : ".png,.jpg,.jpeg,.bmp,.webp,.tiff,.tif,.pdf";
+  }, [ocrConfig]);
+
+  const ocrMaxUploadLabel = useMemo(() => {
+    const maxBytes = Number(ocrConfig?.max_upload_bytes || 0);
+    if (!Number.isFinite(maxBytes) || maxBytes <= 0) return "";
+    return formatBytes(maxBytes);
+  }, [ocrConfig]);
 
   const needsLongAudio = text.length > LONG_TEXT_THRESHOLD;
 
@@ -3772,6 +3938,129 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+
+            <div
+              className={`ocr-panel compact-panel ${proMode ? "is-compact" : ""} ${proMode && collapsedPanels.ocr ? "collapsed" : ""}`}
+            >
+              <div className="row space">
+                <div>
+                  <p className="eyebrow">{t("ocr.title")}</p>
+                  <h3>{t("ocr.subtitle")}</h3>
+                </div>
+                <div className="row">
+                  {renderCompactToggle("ocr")}
+                </div>
+              </div>
+              <div className="compact-body">
+                <div className="ocr-controls-grid">
+                  <div className="field">
+                    <label className="label">{t("ocr.fileLabel")}</label>
+                    <label className="file-upload">
+                      <input type="file" accept={ocrAcceptedTypes} onChange={handleOcrFileChange} />
+                      <span className="ghost small">{t("ocr.chooseFile")}</span>
+                    </label>
+                    <p className="muted small">{ocrFile ? ocrFile.name : t("ocr.noFileSelected")}</p>
+                  </div>
+
+                  <div className="field">
+                    <label className="label">{t("ocr.taskLabel")}</label>
+                    <select className="input small" value={ocrTask} onChange={(e) => setOcrTask(e.target.value)}>
+                      {Object.keys(ocrConfig.tasks || {}).map((taskKey) => (
+                        <option key={taskKey} value={taskKey}>{taskKey}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field">
+                    <label className="label">{t("ocr.maxTokensLabel")}</label>
+                    <input
+                      className="input small"
+                      type="number"
+                      min="64"
+                      max="8192"
+                      value={ocrMaxNewTokens}
+                      onChange={(e) => setOcrMaxNewTokens(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="field">
+                    <label className="label">{t("ocr.maxPagesLabel")}</label>
+                    <input
+                      className="input small"
+                      type="number"
+                      min="1"
+                      max={Math.max(1, Number(ocrConfig.max_pages || 200))}
+                      value={ocrMaxPages}
+                      onChange={(e) => setOcrMaxPages(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="field">
+                    <label className="label">{t("ocr.modelLabel")}</label>
+                    <input
+                      className="input small"
+                      placeholder={ocrConfig.default_model || "zai-org/GLM-OCR"}
+                      value={ocrModel}
+                      onChange={(e) => setOcrModel(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="field" style={{ gridColumn: "1 / -1" }}>
+                    <label className="label">{t("ocr.promptLabel")}</label>
+                    <textarea
+                      className="input textarea"
+                      rows={2}
+                      placeholder={t("ocr.promptPlaceholder")}
+                      value={ocrPrompt}
+                      onChange={(e) => setOcrPrompt(e.target.value)}
+                    />
+                    <p className="muted small">
+                      {t("ocr.fileHint", {
+                        formats: (ocrConfig.supported_extensions || []).join(", "),
+                        max: ocrMaxUploadLabel || t("ocr.unknownLimit"),
+                      })}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="row" style={{ marginTop: "10px", flexWrap: "wrap" }}>
+                  <button type="button" className="button button-small" onClick={handleRunOcr} disabled={ocrBusy || !ocrFile}>
+                    {ocrBusy ? t("ocr.running") : t("ocr.run")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => handleUseOcrText("append")} disabled={!ocrResult.trim()}>
+                    {t("ocr.appendToEditor")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => handleUseOcrText("replace")} disabled={!ocrResult.trim()}>
+                    {t("ocr.replaceEditor")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => handleDownloadOcrText("txt")} disabled={!ocrResult.trim()}>
+                    {t("ocr.downloadTxt")}
+                  </button>
+                  <button type="button" className="ghost small" onClick={() => handleDownloadOcrText("md")} disabled={!ocrResult.trim()}>
+                    {t("ocr.downloadMd")}
+                  </button>
+                </div>
+
+                {(ocrBusy || ocrProgress > 0) && (
+                  <div className="ocr-progress-wrap">
+                    <ProgressBar progress={ocrProgress / 100} message={ocrInfo || t("ocr.running")} />
+                  </div>
+                )}
+
+                {ocrError && <p className="warning" style={{ marginTop: "8px" }}>{ocrError}</p>}
+                {ocrInfo && <p className="muted small" style={{ marginTop: "8px" }}>{ocrInfo}</p>}
+
+                {ocrResult && (
+                  <div className="ocr-result-block">
+                    <div className="row space">
+                      <h4>{t("ocr.resultTitle")}</h4>
+                      {ocrMeta?.model && <span className="tag">{ocrMeta.model}</span>}
+                    </div>
+                    <textarea className="input textarea" rows={6} value={ocrResult} readOnly />
+                  </div>
+                )}
               </div>
             </div>
 

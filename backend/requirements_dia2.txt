@@ -9,3 +9,5 @@ transformers>=4.55.3
 safetensors>=0.4
 sphn
 soundfile
+pillow>=10.0
+pypdfium2>=4.30

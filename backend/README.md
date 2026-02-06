@@ -69,6 +69,13 @@ backend/
 - `GET /models/status` - Model download status
 - `POST /models/download` - Download a model
 
+### OCR (GLM-OCR)
+- `GET /ocr/status` - Check OCR worker/runtime readiness
+- `GET /ocr/prompts` - List supported OCR task presets
+- `POST /ocr/glm` - Run OCR on an uploaded image or PDF (`multipart/form-data`)
+- `POST /ocr/glm/start` - Start async OCR job with progress updates
+- `GET /ocr/jobs/{job_id}` - Poll OCR job status/progress/result
+
 ### Reports
 - `POST /reports/submit` - Submit bug report/feedback
 - `GET /reports` - List submitted reports
@@ -84,6 +91,11 @@ backend/
 | `ORATIO_CLEAN_MAX_HOURS` | 48 | Max age of audio files |
 | `ORATIO_CLEAN_MAX_HISTORY` | 200 | Max history entries |
 | `ORATIO_PORT` | 8000 | Server port |
+| `ORATIO_GLM_OCR_MODEL` | `zai-org/GLM-OCR` | OCR model repo id |
+| `ORATIO_GLM_OCR_TIMEOUT` | 900 | OCR worker timeout (seconds) |
+| `ORATIO_OCR_MAX_UPLOAD_MB` | 20 | Max OCR upload size in MB |
+| `ORATIO_GLM_OCR_MAX_PAGES` | 12 | Max PDF pages to OCR per request |
+| `ORATIO_GLM_OCR_PDF_DPI` | 160 | PDF render DPI before OCR |
 
 ## Voice Cloning
 

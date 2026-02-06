@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import uuid
 import zipfile
@@ -13,7 +14,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Response
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +34,13 @@ from backend.models import ModelManager
 from backend.tts import TTSService, VOICE_PRESETS, AudioResult, chunk_audio_files
 from backend.prompt_pipeline import PromptPipeline
 from backend.smart_latex_processor import smart_process_latex
+from backend.glm_ocr import (
+    GLMOCRService,
+    GLM_OCR_DEFAULT_MODEL,
+    GLM_OCR_INPUT_EXTENSIONS,
+    GLM_OCR_TASK_PROMPTS,
+    OCRRequest,
+)
 
 
 def _looks_like_latex(text: str) -> bool:
@@ -100,6 +116,9 @@ JOBS_PATH = OUTPUT_DIR / "jobs.json"
 SETTINGS_PATH = OUTPUT_DIR / "settings.json"
 SETTINGS_VERSION = 1
 ERROR_LOG_PATH = OUTPUT_DIR / "error.log"
+OCR_UPLOAD_DIR = OUTPUT_DIR / "ocr_uploads"
+OCR_JOBS: Dict[str, Dict[str, Any]] = {}
+OCR_JOBS_LOCK = threading.Lock()
 
 
 def log_error(message: str, exc: Optional[Exception] = None) -> None:
@@ -166,6 +185,10 @@ MAX_LONG_TEXT_LENGTH = int(os.getenv("ORATIO_LONG_TEXT_MAX", "200000"))
 TTS_PROVIDER = os.getenv(
     "ORATIO_TTS_PROVIDER", "auto"
 )  # auto | inference | local | stub
+MAX_OCR_UPLOAD_BYTES = max(
+    1024 * 1024, int(os.getenv("ORATIO_OCR_MAX_UPLOAD_MB", "20")) * 1024 * 1024
+)
+MAX_OCR_PAGES = max(1, int(os.getenv("ORATIO_GLM_OCR_MAX_PAGES", "12")))
 MODELS_DIR_ENV = os.getenv("ORATIO_MODELS_DIR")
 OPTIONAL_MODELS = {
     m.strip().lower()
@@ -840,9 +863,36 @@ class PresetsResponse(BaseModel):
     defaults: Dict[str, str]
 
 
+class OCRResponse(BaseModel):
+    text: str
+    model: str
+    task: str
+    prompt: str
+    filename: str
+    elapsed_seconds: float
+    device: Optional[str] = None
+
+
+class OCRJobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    progress: float = 0.0
+    message: Optional[str] = None
+    current_page: Optional[int] = None
+    total_pages: Optional[int] = None
+    filename: Optional[str] = None
+    task: Optional[str] = None
+    model: Optional[str] = None
+    result_text: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
+    device: Optional[str] = None
+    error: Optional[str] = None
+
+
 def ensure_directories() -> None:
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    OCR_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_history() -> List[dict]:
@@ -1066,6 +1116,7 @@ tts_service = TTSService(
     models_dir=MODELS_DIR,
     model_manager=model_manager,
 )
+ocr_service = GLMOCRService()
 job_store = JobStore(path=JOBS_PATH, max_items=MAX_JOBS)
 run_from_env(AUDIO_DIR, HISTORY_PATH)
 
@@ -1111,6 +1162,299 @@ def settings_token(body: SettingsTokenRequest):
     os.environ.pop("HF_TOKEN", None)
     os.environ.pop("HUGGINGFACEHUB_API_TOKEN", None)
     return {"status": "ok", "hf_token_set": False}
+
+
+def _create_ocr_job(
+    *, filename: str, task: str, model_id: str, max_pages: int
+) -> Dict[str, Any]:
+    job_id = str(uuid.uuid4())
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "progress": 0.0,
+        "message": "Queued",
+        "current_page": None,
+        "total_pages": None,
+        "filename": filename,
+        "task": task,
+        "model": model_id,
+        "result_text": None,
+        "elapsed_seconds": None,
+        "device": None,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "max_pages": max_pages,
+    }
+    with OCR_JOBS_LOCK:
+        OCR_JOBS[job_id] = job
+    return job
+
+
+def _update_ocr_job(job_id: str, **updates: Any) -> None:
+    with OCR_JOBS_LOCK:
+        job = OCR_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _get_ocr_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with OCR_JOBS_LOCK:
+        job = OCR_JOBS.get(job_id)
+        if not job:
+            return None
+        return dict(job)
+
+
+def _run_ocr_job(
+    *,
+    job_id: str,
+    temp_path: Path,
+    filename: str,
+    task: str,
+    prompt: Optional[str],
+    model_id: str,
+    max_new_tokens: int,
+    max_pages: int,
+) -> None:
+    _update_ocr_job(job_id, status="running", message="Starting OCR", progress=1.0)
+
+    def on_progress(progress_payload: dict) -> None:
+        _update_ocr_job(
+            job_id,
+            status="running",
+            progress=float(progress_payload.get("progress") or 0.0),
+            message=str(progress_payload.get("message") or "Running OCR"),
+            current_page=progress_payload.get("current_page"),
+            total_pages=progress_payload.get("total_pages"),
+        )
+
+    try:
+        result = ocr_service.run_with_progress(
+            OCRRequest(
+                image_path=temp_path,
+                task=task,
+                prompt=prompt,
+                model_id=model_id,
+                max_new_tokens=max_new_tokens,
+                max_pages=max_pages,
+            ),
+            progress_callback=on_progress,
+        )
+        _update_ocr_job(
+            job_id,
+            status="succeeded",
+            progress=100.0,
+            message="Done",
+            result_text=result.text,
+            model=result.model,
+            task=result.task,
+            elapsed_seconds=result.elapsed_seconds,
+            device=result.device,
+            filename=filename,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_error("GLM-OCR async job failed", exc)
+        _update_ocr_job(
+            job_id,
+            status="failed",
+            message="OCR failed",
+            error=str(exc),
+        )
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@app.get("/ocr/status")
+def ocr_status():
+    return ocr_service.health()
+
+
+@app.get("/ocr/prompts")
+def ocr_prompts():
+    return {
+        "default_model": GLM_OCR_DEFAULT_MODEL,
+        "tasks": GLM_OCR_TASK_PROMPTS,
+        "supported_extensions": sorted(GLM_OCR_INPUT_EXTENSIONS),
+        "max_upload_bytes": MAX_OCR_UPLOAD_BYTES,
+        "max_pages": MAX_OCR_PAGES,
+    }
+
+
+@app.post("/ocr/glm/start", response_model=OCRJobStatusResponse)
+async def ocr_glm_start(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    task: str = Form("text"),
+    prompt: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
+    max_new_tokens: int = Form(2048),
+    max_pages: int = Form(MAX_OCR_PAGES),
+):
+    task_key = (task or "text").strip().lower()
+    if task_key not in GLM_OCR_TASK_PROMPTS:
+        supported = ", ".join(sorted(GLM_OCR_TASK_PROMPTS.keys()))
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported OCR task '{task_key}'. Use one of: {supported}",
+        )
+
+    if max_new_tokens < 64 or max_new_tokens > 8192:
+        raise HTTPException(
+            status_code=422,
+            detail="max_new_tokens must be between 64 and 8192",
+        )
+
+    if max_pages < 1 or max_pages > 200:
+        raise HTTPException(
+            status_code=422,
+            detail="max_pages must be between 1 and 200",
+        )
+
+    filename = file.filename or "upload"
+    extension = Path(filename).suffix.lower()
+    if extension not in GLM_OCR_INPUT_EXTENSIONS:
+        supported = ", ".join(sorted(GLM_OCR_INPUT_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format '{extension}'. Use one of: {supported}",
+        )
+
+    upload_bytes = await file.read()
+    if not upload_bytes:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if len(upload_bytes) > MAX_OCR_UPLOAD_BYTES:
+        max_mb = round(MAX_OCR_UPLOAD_BYTES / (1024 * 1024), 2)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload too large. Max size is {max_mb} MB",
+        )
+
+    model_id = (model or GLM_OCR_DEFAULT_MODEL).strip() or GLM_OCR_DEFAULT_MODEL
+    temp_path = OCR_UPLOAD_DIR / f"{uuid.uuid4()}{extension}"
+    temp_path.write_bytes(upload_bytes)
+
+    job = _create_ocr_job(
+        filename=filename,
+        task=task_key,
+        model_id=model_id,
+        max_pages=max_pages,
+    )
+    background_tasks.add_task(
+        _run_ocr_job,
+        job_id=job["job_id"],
+        temp_path=temp_path,
+        filename=filename,
+        task=task_key,
+        prompt=prompt,
+        model_id=model_id,
+        max_new_tokens=max_new_tokens,
+        max_pages=max_pages,
+    )
+
+    await file.close()
+    return OCRJobStatusResponse(**job)
+
+
+@app.get("/ocr/jobs/{job_id}", response_model=OCRJobStatusResponse)
+def ocr_job_status(job_id: str):
+    job = _get_ocr_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="OCR job not found")
+    return OCRJobStatusResponse(**job)
+
+
+@app.post("/ocr/glm", response_model=OCRResponse)
+async def ocr_glm(
+    file: UploadFile = File(...),
+    task: str = Form("text"),
+    prompt: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
+    max_new_tokens: int = Form(2048),
+    max_pages: int = Form(MAX_OCR_PAGES),
+):
+    task_key = (task or "text").strip().lower()
+    if task_key not in GLM_OCR_TASK_PROMPTS:
+        supported = ", ".join(sorted(GLM_OCR_TASK_PROMPTS.keys()))
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported OCR task '{task_key}'. Use one of: {supported}",
+        )
+
+    if max_new_tokens < 64 or max_new_tokens > 8192:
+        raise HTTPException(
+            status_code=422,
+            detail="max_new_tokens must be between 64 and 8192",
+        )
+
+    if max_pages < 1 or max_pages > 200:
+        raise HTTPException(
+            status_code=422,
+            detail="max_pages must be between 1 and 200",
+        )
+
+    filename = file.filename or "upload"
+    extension = Path(filename).suffix.lower()
+    if extension not in GLM_OCR_INPUT_EXTENSIONS:
+        supported = ", ".join(sorted(GLM_OCR_INPUT_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format '{extension}'. Use one of: {supported}",
+        )
+
+    upload_bytes = await file.read()
+    if not upload_bytes:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if len(upload_bytes) > MAX_OCR_UPLOAD_BYTES:
+        max_mb = round(MAX_OCR_UPLOAD_BYTES / (1024 * 1024), 2)
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload too large. Max size is {max_mb} MB",
+        )
+
+    temp_path = OCR_UPLOAD_DIR / f"{uuid.uuid4()}{extension}"
+    temp_path.write_bytes(upload_bytes)
+
+    try:
+        model_id = (model or GLM_OCR_DEFAULT_MODEL).strip() or GLM_OCR_DEFAULT_MODEL
+        result = ocr_service.run(
+            OCRRequest(
+                image_path=temp_path,
+                task=task_key,
+                prompt=prompt,
+                model_id=model_id,
+                max_new_tokens=max_new_tokens,
+                max_pages=max_pages,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        log_error("GLM-OCR runtime error", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log_error("GLM-OCR request failed", exc)
+        raise HTTPException(status_code=500, detail="OCR failed") from exc
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        await file.close()
+
+    return OCRResponse(
+        text=result.text,
+        model=result.model,
+        task=result.task,
+        prompt=result.prompt,
+        filename=filename,
+        elapsed_seconds=result.elapsed_seconds,
+        device=result.device,
+    )
 
 
 class TelemetrySettingsRequest(BaseModel):
